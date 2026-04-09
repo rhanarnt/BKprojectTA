@@ -1,0 +1,21 @@
+================================================================================
+HASIL TESTING MODEL - PREDIKSI PERMINTAAN STOK BAHAN KUE
+================================================================================
+
+Total Data: 6742 baris
+Training Set: 5393 (80.0%)
+Testing Set: 1349 (20.0%)
+Features: 10
+Target: jumlah_permintaan_bahan
+
+LINEAR REGRESSION - Test Metrics:
+  R² Score: 0.7813
+  MAE: 0.63
+  RMSE: 0.91
+
+RANDOM FOREST - Test Metrics:
+  R² Score: 0.9964
+  MAE: 0.03
+  RMSE: 0.12
+
+REKOMENDASI: Random Forest (Lebih baik)
