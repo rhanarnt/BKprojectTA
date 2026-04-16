@@ -481,6 +481,89 @@ def save_prediction():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+# ============================================================================
+# RECIPES ENDPOINTS
+# ============================================================================
+
+@app.route('/recipes', methods=['GET'])
+def get_recipes():
+    """Get all recipes with their ingredients"""
+    try:
+        connection = get_db_connection()
+        if not connection:
+            return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
+
+        cursor = connection.cursor(dictionary=True)
+
+        # Get all recipes
+        cursor.execute("SELECT id, recipe_name, description FROM recipes ORDER BY recipe_name")
+        recipes = cursor.fetchall()
+
+        # Get ingredients for each recipe
+        for recipe in recipes:
+            cursor.execute("""
+                SELECT product_name, quantity_needed, unit
+                FROM recipe_ingredients
+                WHERE recipe_id = %s
+                ORDER BY product_name
+            """, (recipe['id'],))
+            recipe['ingredients'] = cursor.fetchall()
+
+        cursor.close()
+        connection.close()
+
+        return jsonify({
+            'status': 'success',
+            'total': len(recipes),
+            'recipes': recipes
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Get recipes error: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/recipes/<int:recipe_id>', methods=['GET'])
+def get_recipe(recipe_id):
+    """Get specific recipe with ingredients"""
+    try:
+        connection = get_db_connection()
+        if not connection:
+            return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
+
+        cursor = connection.cursor(dictionary=True)
+
+        # Get recipe
+        cursor.execute("SELECT id, recipe_name, description FROM recipes WHERE id = %s", (recipe_id,))
+        recipe = cursor.fetchone()
+
+        if not recipe:
+            cursor.close()
+            connection.close()
+            return jsonify({'status': 'error', 'message': 'Recipe not found'}), 404
+
+        # Get ingredients
+        cursor.execute("""
+            SELECT product_name, quantity_needed, unit
+            FROM recipe_ingredients
+            WHERE recipe_id = %s
+            ORDER BY product_name
+        """, (recipe_id,))
+        recipe['ingredients'] = cursor.fetchall()
+
+        cursor.close()
+        connection.close()
+
+        return jsonify({
+            'status': 'success',
+            'recipe': recipe
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Get recipe error: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'status': 'error', 'message': 'Endpoint tidak ditemukan'}), 404
@@ -501,7 +584,7 @@ if __name__ == '__main__':
     logger.info(f"Model: {metadata['model_type']}")
     logger.info(f"Accuracy (R²): {metadata['r2_score']:.4f}")
     logger.info(f"Features: {len(feature_columns)}")
-    logger.info("Endpoints: /health, /metadata, /info, /prediksi, /batch-prediksi")
+    logger.info("Endpoints: /health, /metadata, /info, /prediksi, /batch-prediksi, /products, /transactions, /predictions, /recipes")
     logger.info("Access API at: http://localhost:5000")
     logger.info("=" * 80)
 
