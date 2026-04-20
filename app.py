@@ -299,6 +299,75 @@ def get_product(product_id):
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/products', methods=['POST'])
+def create_product():
+    """
+    Create new product in database
+    Body: {
+        "name": "Tepung Terigu 1kg",
+        "category": "Tepung",
+        "price": 15000,
+        "current_stock": 50
+    }
+    """
+    try:
+        data = request.json
+
+        # Validate required fields
+        required_fields = ['name', 'category', 'price', 'current_stock']
+        missing_fields = [f for f in required_fields if f not in data]
+
+        if missing_fields:
+            return jsonify({
+                'status': 'error',
+                'message': f'Missing fields: {", ".join(missing_fields)}',
+                'required_fields': required_fields
+            }), 400
+
+        connection = get_db_connection()
+        if not connection:
+            return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
+
+        cursor = connection.cursor()
+
+        # Check for duplicate product name
+        cursor.execute("SELECT id FROM products WHERE name = %s", (data['name'],))
+        if cursor.fetchone():
+            cursor.close()
+            connection.close()
+            return jsonify({
+                'status': 'error',
+                'message': f'Product "{data["name"]}" already exists'
+            }), 409
+
+        # Insert new product
+        cursor.execute("""
+            INSERT INTO products
+            (name, category, price, current_stock)
+            VALUES (%s, %s, %s, %s)
+        """, (
+            data['name'],
+            data['category'],
+            data['price'],
+            data['current_stock']
+        ))
+        connection.commit()
+
+        product_id = cursor.lastrowid
+        cursor.close()
+        connection.close()
+
+        return jsonify({
+            'status': 'success',
+            'product_id': product_id,
+            'message': 'Product created successfully'
+        }), 201
+
+    except Exception as e:
+        logger.error(f"Create product error: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/transactions', methods=['POST'])
 def save_transaction():
     """
