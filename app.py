@@ -236,8 +236,9 @@ def info():
             'POST /prediksi': 'Single prediction',
             'POST /batch-prediksi': 'Batch prediction',
             'GET /products': 'Get all products',
-            'POST /transactions': 'Save transaction',
-            'GET /transactions': 'Get transaction history'
+            'POST /transactions': 'Save transaction (legacy)',
+            'GET /transactions': 'Get transaction history',
+            'POST /transaksi': 'Save transaction and update stock automatically'
         },
         'required_features': feature_columns
     }), 200
@@ -429,6 +430,94 @@ def save_transaction():
     except Exception as e:
         logger.error(f"Save transaction error: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/transaksi', methods=['POST'])
+def add_transaction_with_stock_update():
+    """
+    Add transaction AND update stock automatically
+    Body: {
+        "produk_id": 1,
+        "jumlah": 5,
+        "unit_price": 15000,
+        "total_price": 75000,
+        "transaction_date": "2024-04-05"
+    }
+    """
+    try:
+        data = request.json
+
+        # Validate required fields
+        required_fields = ['produk_id', 'jumlah', 'unit_price', 'total_price', 'transaction_date']
+        missing_fields = [f for f in required_fields if f not in data]
+
+        if missing_fields:
+            return jsonify({
+                'status': 'error',
+                'message': f'Missing fields: {", ".join(missing_fields)}',
+                'required_fields': required_fields
+            }), 400
+
+        connection = get_db_connection()
+        if not connection:
+            return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
+
+        cursor = connection.cursor(dictionary=True)
+
+        # 1. Get product info
+        cursor.execute("SELECT id, name, category FROM products WHERE id = %s", (data['produk_id'],))
+        product = cursor.fetchone()
+
+        if not product:
+            cursor.close()
+            connection.close()
+            return jsonify({
+                'status': 'error',
+                'message': f'Product ID {data["produk_id"]} not found'
+            }), 404
+
+        # 2. Save transaction
+        cursor.execute("""
+            INSERT INTO transactions
+            (product_name, category, quantity, unit_price, total_price, transaction_date)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (
+            product['name'],
+            product['category'],
+            data['jumlah'],
+            data['unit_price'],
+            data['total_price'],
+            data['transaction_date']
+        ))
+        connection.commit()
+        transaction_id = cursor.lastrowid
+
+        # 3. Update product stock (add quantity)
+        cursor.execute("""
+            UPDATE products
+            SET current_stock = current_stock + %s
+            WHERE id = %s
+        """, (data['jumlah'], data['produk_id']))
+        connection.commit()
+
+        cursor.close()
+        connection.close()
+
+        logger.info(f"Transaction saved: ID={transaction_id}, Stock updated for product ID={data['produk_id']} (+{data['jumlah']})")
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Stok berhasil ditambahkan',
+            'transaction_id': transaction_id,
+            'product_id': data['produk_id'],
+            'product_name': product['name'],
+            'quantity_added': data['jumlah']
+        }), 201
+
+    except Exception as e:
+        logger.error(f"Add transaction with stock update error: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 
 
 @app.route('/transactions', methods=['GET'])
