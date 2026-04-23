@@ -308,7 +308,9 @@ def create_product():
         "name": "Tepung Terigu 1kg",
         "category": "Tepung",
         "price": 15000,
-        "current_stock": 50
+        "current_stock": 50,
+        "unit": "kg",
+        "product_type": "Bahan"
     }
     """
     try:
@@ -331,6 +333,15 @@ def create_product():
 
         cursor = connection.cursor()
 
+        # Optional columns compatibility (works for old/new schemas)
+        cursor.execute("SHOW COLUMNS FROM products LIKE 'unit'")
+        has_unit_column = cursor.fetchone() is not None
+        cursor.execute("SHOW COLUMNS FROM products LIKE 'product_type'")
+        has_product_type_column = cursor.fetchone() is not None
+
+        unit_value = data.get('unit')
+        product_type_value = data.get('product_type')
+
         # Check for duplicate product name
         cursor.execute("SELECT id FROM products WHERE name = %s", (data['name'],))
         if cursor.fetchone():
@@ -342,16 +353,54 @@ def create_product():
             }), 409
 
         # Insert new product
-        cursor.execute("""
-            INSERT INTO products
-            (name, category, price, current_stock)
-            VALUES (%s, %s, %s, %s)
-        """, (
-            data['name'],
-            data['category'],
-            data['price'],
-            data['current_stock']
-        ))
+        if has_unit_column and has_product_type_column:
+            cursor.execute("""
+                INSERT INTO products
+                (name, category, price, current_stock, unit, product_type)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (
+                data['name'],
+                data['category'],
+                data['price'],
+                data['current_stock'],
+                unit_value,
+                product_type_value
+            ))
+        elif has_unit_column:
+            cursor.execute("""
+                INSERT INTO products
+                (name, category, price, current_stock, unit)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (
+                data['name'],
+                data['category'],
+                data['price'],
+                data['current_stock'],
+                unit_value
+            ))
+        elif has_product_type_column:
+            cursor.execute("""
+                INSERT INTO products
+                (name, category, price, current_stock, product_type)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (
+                data['name'],
+                data['category'],
+                data['price'],
+                data['current_stock'],
+                product_type_value
+            ))
+        else:
+            cursor.execute("""
+                INSERT INTO products
+                (name, category, price, current_stock)
+                VALUES (%s, %s, %s, %s)
+            """, (
+                data['name'],
+                data['category'],
+                data['price'],
+                data['current_stock']
+            ))
         connection.commit()
 
         product_id = cursor.lastrowid
