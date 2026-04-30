@@ -30,6 +30,19 @@ CREATE TABLE IF NOT EXISTS transactions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Create Stock Usage History Table
+CREATE TABLE IF NOT EXISTS stock_usage_history (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    recipe_name VARCHAR(255),
+    production_quantity INT,
+    product_id INT NOT NULL,
+    product_name VARCHAR(255) NOT NULL,
+    quantity_used FLOAT NOT NULL,
+    unit VARCHAR(50),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Create Predictions Table
 CREATE TABLE IF NOT EXISTS predictions (
     id INT AUTO_INCREMENT PRIMARY KEY,

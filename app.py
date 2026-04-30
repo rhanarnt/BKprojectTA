@@ -42,6 +42,23 @@ def get_db_connection():
         logger.error(f"Database connection error: {e}")
         return None
 
+def table_exists(connection, table_name: str) -> bool:
+    try:
+        cursor = connection.cursor()
+        cursor.execute("SHOW TABLES LIKE %s", (table_name,))
+        exists = cursor.fetchone() is not None
+        cursor.close()
+        return exists
+    except Error:
+        return False
+
+def get_product_name_column(connection) -> str:
+    cursor = connection.cursor()
+    cursor.execute("SHOW COLUMNS FROM products LIKE 'name'")
+    has_name = cursor.fetchone() is not None
+    cursor.close()
+    return 'name' if has_name else 'product_name'
+
 # ============================================================================
 # LOAD MODELS AT STARTUP
 # ============================================================================
@@ -238,7 +255,8 @@ def info():
             'GET /products': 'Get all products',
             'POST /transactions': 'Save transaction (legacy)',
             'GET /transactions': 'Get transaction history',
-            'POST /transaksi': 'Save transaction and update stock automatically'
+            'POST /transaksi': 'Save transaction and update stock automatically',
+            'POST /stock/consume': 'Consume stock after production'
         },
         'required_features': feature_columns
     }), 200
@@ -415,6 +433,147 @@ def create_product():
 
     except Exception as e:
         logger.error(f"Create product error: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/stock/consume', methods=['POST'])
+def consume_stock():
+    """
+    Consume stock after production.
+    Body: {
+        "recipe_name": "Donat",
+        "production_quantity": 10,
+        "items": [
+            {"product_id": 1, "product_name": "Tepung Terigu 1kg", "quantity": 1, "unit": "kg"}
+        ],
+        "allow_partial": false
+    }
+    """
+    try:
+        data = request.json or {}
+        items = data.get('items', [])
+        allow_partial = bool(data.get('allow_partial', False))
+
+        if not isinstance(items, list) or not items:
+            return jsonify({
+                'status': 'error',
+                'message': 'Items wajib diisi'
+            }), 400
+
+        connection = get_db_connection()
+        if not connection:
+            return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
+
+        name_column = get_product_name_column(connection)
+        history_enabled = table_exists(connection, 'stock_usage_history')
+
+        cursor = connection.cursor(dictionary=True)
+        connection.start_transaction()
+
+        errors = []
+        valid_items = []
+
+        for item in items:
+            product_id = item.get('product_id')
+            product_name = item.get('product_name')
+            quantity = item.get('quantity')
+
+            if not isinstance(quantity, (int, float)) or quantity <= 0:
+                errors.append({
+                    'item': item,
+                    'message': 'Quantity harus lebih dari 0'
+                })
+                continue
+
+            if product_id:
+                cursor.execute(
+                    f"SELECT id, {name_column} as name, current_stock, unit FROM products WHERE id = %s",
+                    (product_id,)
+                )
+            else:
+                cursor.execute(
+                    f"SELECT id, {name_column} as name, current_stock, unit FROM products WHERE {name_column} = %s",
+                    (product_name,)
+                )
+
+            product = cursor.fetchone()
+            if not product:
+                errors.append({
+                    'item': item,
+                    'message': 'Produk tidak ditemukan'
+                })
+                continue
+
+            if product['current_stock'] < quantity:
+                errors.append({
+                    'item': item,
+                    'message': 'Stok tidak cukup',
+                    'available': product['current_stock']
+                })
+                continue
+
+            valid_items.append({
+                'product': product,
+                'quantity': quantity,
+                'unit': item.get('unit') or product.get('unit'),
+            })
+
+        if errors and not allow_partial:
+            connection.rollback()
+            cursor.close()
+            connection.close()
+            return jsonify({
+                'status': 'error',
+                'message': 'Ada item gagal diproses',
+                'errors': errors
+            }), 400
+
+        results = []
+        for entry in valid_items:
+            product = entry['product']
+            quantity = entry['quantity']
+            cursor.execute(
+                "UPDATE products SET current_stock = current_stock - %s WHERE id = %s",
+                (quantity, product['id'])
+            )
+
+            if history_enabled:
+                cursor.execute(
+                    """
+                    INSERT INTO stock_usage_history
+                    (recipe_name, production_quantity, product_id, product_name, quantity_used, unit)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        data.get('recipe_name'),
+                        data.get('production_quantity'),
+                        product['id'],
+                        product['name'],
+                        quantity,
+                        entry['unit']
+                    )
+                )
+
+            results.append({
+                'product_id': product['id'],
+                'product_name': product['name'],
+                'quantity_used': quantity,
+                'unit': entry['unit']
+            })
+
+        connection.commit()
+        cursor.close()
+        connection.close()
+
+        return jsonify({
+            'status': 'success',
+            'processed': len(results),
+            'results': results,
+            'errors': errors if allow_partial else []
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Consume stock error: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
