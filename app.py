@@ -9,6 +9,7 @@ import joblib
 import pandas as pd
 import numpy as np
 import logging
+import math
 from datetime import datetime
 import mysql.connector
 from mysql.connector import Error
@@ -19,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
+
+# Prevent overlapping stock consumption transactions
+transaction_in_progress = False
 
 # ============================================================================
 # DATABASE CONFIGURATION
@@ -58,6 +62,21 @@ def get_product_name_column(connection) -> str:
     has_name = cursor.fetchone() is not None
     cursor.close()
     return 'name' if has_name else 'product_name'
+
+def grams_to_kg_rounded(grams: float) -> float:
+    """
+    Convert grams to kilograms with rounding rules:
+    - <= 500g -> 0.5kg
+    - 500g < g <= 1000g -> 1kg
+    - > 1000g -> round up to nearest 0.5kg
+    """
+    if grams <= 0:
+        raise ValueError("grams must be greater than 0")
+    if grams <= 500:
+        return 0.5
+    if grams <= 1000:
+        return 1.0
+    return math.ceil(grams / 500.0) * 0.5
 
 # ============================================================================
 # LOAD MODELS AT STARTUP
@@ -449,8 +468,17 @@ def consume_stock():
         "allow_partial": false
     }
     """
+    global transaction_in_progress
+    if transaction_in_progress:
+        return jsonify({
+            'status': 'error',
+            'message': 'Transaction already in progress'
+        }), 429
+
+    transaction_in_progress = True
     try:
         data = request.json or {}
+        logger.info(f"[stock/consume] Incoming payload: {data}")
         items = data.get('items', [])
         allow_partial = bool(data.get('allow_partial', False))
 
@@ -477,6 +505,7 @@ def consume_stock():
             product_id = item.get('product_id')
             product_name = item.get('product_name')
             quantity = item.get('quantity')
+            unit = (item.get('unit') or '').strip().lower()
 
             if not isinstance(quantity, (int, float)) or quantity <= 0:
                 errors.append({
@@ -504,7 +533,29 @@ def consume_stock():
                 })
                 continue
 
-            if product['current_stock'] < quantity:
+            product_unit = (product.get('unit') or '').strip().lower()
+            effective_quantity = quantity
+            effective_unit = unit or product_unit
+
+            if unit in ['g', 'gram', 'grams']:
+                try:
+                    effective_quantity = grams_to_kg_rounded(float(quantity))
+                    effective_unit = 'kg'
+                    logger.info(
+                        f"[stock/consume] Rounded grams to kg: {quantity}g -> {effective_quantity}kg (product_id={product.get('id')})"
+                    )
+                except ValueError:
+                    errors.append({
+                        'item': item,
+                        'message': 'Quantity gram harus lebih dari 0'
+                    })
+                    continue
+            else:
+                logger.info(
+                    f"[stock/consume] Using quantity without gram rounding: {quantity} {effective_unit} (product_id={product.get('id')})"
+                )
+
+            if product['current_stock'] < effective_quantity:
                 errors.append({
                     'item': item,
                     'message': 'Stok tidak cukup',
@@ -514,8 +565,10 @@ def consume_stock():
 
             valid_items.append({
                 'product': product,
-                'quantity': quantity,
-                'unit': item.get('unit') or product.get('unit'),
+                'quantity': effective_quantity,
+                'unit': effective_unit or product.get('unit'),
+                'input_quantity': quantity,
+                'input_unit': unit or product.get('unit')
             })
 
         if errors and not allow_partial:
@@ -558,7 +611,10 @@ def consume_stock():
                 'product_id': product['id'],
                 'product_name': product['name'],
                 'quantity_used': quantity,
-                'unit': entry['unit']
+                'deducted_amount': quantity,
+                'unit': entry['unit'],
+                'quantity_input': entry.get('input_quantity'),
+                'unit_input': entry.get('input_unit')
             })
 
         connection.commit()
@@ -575,6 +631,8 @@ def consume_stock():
     except Exception as e:
         logger.error(f"Consume stock error: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        transaction_in_progress = False
 
 
 @app.route('/transactions', methods=['POST'])
