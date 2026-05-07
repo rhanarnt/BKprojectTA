@@ -21,9 +21,6 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
-# Prevent overlapping stock consumption transactions
-transaction_in_progress = False
-
 # ============================================================================
 # DATABASE CONFIGURATION
 # ============================================================================
@@ -62,6 +59,13 @@ def get_product_name_column(connection) -> str:
     has_name = cursor.fetchone() is not None
     cursor.close()
     return 'name' if has_name else 'product_name'
+
+def has_product_unit_column(connection) -> bool:
+    cursor = connection.cursor()
+    cursor.execute("SHOW COLUMNS FROM products LIKE 'unit'")
+    has_unit = cursor.fetchone() is not None
+    cursor.close()
+    return has_unit
 
 def grams_to_kg_rounded(grams: float) -> float:
     """
@@ -468,17 +472,14 @@ def consume_stock():
         "allow_partial": false
     }
     """
-    global transaction_in_progress
-    if transaction_in_progress:
-        return jsonify({
-            'status': 'error',
-            'message': 'Transaction already in progress'
-        }), 429
-
-    transaction_in_progress = True
+    print("FLASK TERBARU AKTIF")
+    print("REQUEST RECEIVED")
+    connection = None
+    cursor = None
+    started_transaction = False
     try:
         data = request.json or {}
-        logger.info(f"[stock/consume] Incoming payload: {data}")
+        print("REQUEST DATA:", data)
         items = data.get('items', [])
         allow_partial = bool(data.get('allow_partial', False))
 
@@ -493,10 +494,11 @@ def consume_stock():
             return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
 
         name_column = get_product_name_column(connection)
+        unit_column_exists = has_product_unit_column(connection)
         history_enabled = table_exists(connection, 'stock_usage_history')
 
         cursor = connection.cursor(dictionary=True)
-        connection.start_transaction()
+        started_transaction = True
 
         errors = []
         valid_items = []
@@ -514,14 +516,19 @@ def consume_stock():
                 })
                 continue
 
+            if unit_column_exists:
+                select_fields = f"id, {name_column} as name, current_stock, unit"
+            else:
+                select_fields = f"id, {name_column} as name, current_stock"
+
             if product_id:
                 cursor.execute(
-                    f"SELECT id, {name_column} as name, current_stock, unit FROM products WHERE id = %s",
+                    f"SELECT {select_fields} FROM products WHERE id = %s",
                     (product_id,)
                 )
             else:
                 cursor.execute(
-                    f"SELECT id, {name_column} as name, current_stock, unit FROM products WHERE {name_column} = %s",
+                    f"SELECT {select_fields} FROM products WHERE {name_column} = %s",
                     (product_name,)
                 )
 
@@ -573,14 +580,13 @@ def consume_stock():
 
         if errors and not allow_partial:
             connection.rollback()
-            cursor.close()
-            connection.close()
             return jsonify({
                 'status': 'error',
                 'message': 'Ada item gagal diproses',
                 'errors': errors
             }), 400
 
+        print("UPDATING STOCK")
         results = []
         for entry in valid_items:
             product = entry['product']
@@ -618,8 +624,6 @@ def consume_stock():
             })
 
         connection.commit()
-        cursor.close()
-        connection.close()
 
         return jsonify({
             'status': 'success',
@@ -629,10 +633,25 @@ def consume_stock():
         }), 200
 
     except Exception as e:
+        if connection and started_transaction:
+            try:
+                connection.rollback()
+            except Exception:
+                logger.exception("[stock/consume] Failed to rollback transaction")
         logger.error(f"Consume stock error: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
     finally:
-        transaction_in_progress = False
+        if cursor is not None:
+            try:
+                cursor.close()
+            except Exception:
+                logger.exception("[stock/consume] Failed to close cursor")
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                logger.exception("[stock/consume] Failed to close connection")
+        print("REQUEST FINISHED")
 
 
 @app.route('/transactions', methods=['POST'])
@@ -996,6 +1015,11 @@ def not_found(error):
 @app.errorhandler(500)
 def internal_error(error):
     return jsonify({'status': 'error', 'message': 'Internal server error'}), 500
+
+
+@app.route('/test')
+def test():
+    return {"message": "FLASK BARU AKTIF"}
 
 
 # ============================================================================
