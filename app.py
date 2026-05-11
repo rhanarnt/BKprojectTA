@@ -29,6 +29,9 @@ DB_USER = 'root'
 DB_PASSWORD = ''  # Ganti dengan password MySQL Anda jika ada
 DB_NAME = 'prediksi_stok_db'
 
+# Table names (use backticks for names with spaces)
+TRANSACTIONS_TABLE = "`Stock In`"
+
 def get_db_connection():
     """Get MySQL database connection"""
     try:
@@ -686,8 +689,8 @@ def save_transaction():
             return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
 
         cursor = connection.cursor()
-        cursor.execute("""
-            INSERT INTO transactions
+        cursor.execute(f"""
+            INSERT INTO {TRANSACTIONS_TABLE}
             (product_name, category, quantity, unit_price, total_price, transaction_date)
             VALUES (%s, %s, %s, %s, %s, %s)
         """, (
@@ -762,8 +765,8 @@ def add_transaction_with_stock_update():
             }), 404
 
         # 2. Save transaction
-        cursor.execute("""
-            INSERT INTO transactions
+        cursor.execute(f"""
+            INSERT INTO {TRANSACTIONS_TABLE}
             (product_name, category, quantity, unit_price, total_price, transaction_date)
             VALUES (%s, %s, %s, %s, %s, %s)
         """, (
@@ -821,7 +824,7 @@ def get_transactions():
         cursor = connection.cursor(dictionary=True)
 
         # Build query
-        query = "SELECT * FROM transactions WHERE 1=1"
+        query = f"SELECT * FROM {TRANSACTIONS_TABLE} WHERE 1=1"
         params = []
 
         if product_name:
@@ -835,7 +838,7 @@ def get_transactions():
         transactions = cursor.fetchall()
 
         # Get total count
-        cursor.execute("SELECT COUNT(*) as total FROM transactions" +
+        cursor.execute(f"SELECT COUNT(*) as total FROM {TRANSACTIONS_TABLE}" +
                       (" WHERE product_name LIKE %s" if product_name else ""),
                       ([f"%{product_name}%"] if product_name else []))
         total = cursor.fetchone()['total']
