@@ -70,6 +70,85 @@ def has_product_unit_column(connection) -> bool:
     cursor.close()
     return has_unit
 
+def escape_table_name(table_name: str) -> str:
+    return f"`{table_name}`"
+
+def get_existing_table(connection, candidates: list[str]) -> str | None:
+    for table_name in candidates:
+        if table_exists(connection, table_name):
+            return table_name
+    return None
+
+def get_existing_column(connection, table_name: str, candidates: list[str]) -> str | None:
+    cursor = connection.cursor()
+    try:
+        for column in candidates:
+            cursor.execute(f"SHOW COLUMNS FROM {escape_table_name(table_name)} LIKE %s", (column,))
+            if cursor.fetchone() is not None:
+                return column
+    finally:
+        cursor.close()
+    return None
+
+def build_report_response(success: bool, message: str, data: list | None = None, status_code: int = 200):
+    return jsonify({
+        'status': success,
+        'message': message,
+        'data': data or []
+    }), status_code
+
+def compute_stock_status(stok: float, stok_minimum: float) -> str:
+    if stok > stok_minimum:
+        return 'Aman'
+    if stok == stok_minimum:
+        return 'Rendah'
+    return 'Kritis'
+
+def fetch_stock_report(connection):
+    table_name = get_existing_table(connection, ['bahan', 'products'])
+    if not table_name:
+        return None, 'Tabel bahan atau products tidak ditemukan'
+
+    name_col = get_existing_column(connection, table_name, ['nama_bahan', 'product_name', 'name'])
+    stock_col = get_existing_column(connection, table_name, ['stok', 'current_stock', 'stock'])
+    min_col = get_existing_column(connection, table_name, ['stok_minimum', 'min_stock', 'minimum_stock'])
+    unit_col = get_existing_column(connection, table_name, ['unit'])
+
+    if not name_col or not stock_col:
+        return None, 'Kolom bahan/stok tidak ditemukan'
+
+    select_min = min_col if min_col else '0'
+    select_unit = unit_col if unit_col else "''"
+
+    cursor = connection.cursor(dictionary=True)
+    cursor.execute(
+        f"""
+        SELECT {name_col} AS nama_bahan,
+               {stock_col} AS stok,
+               {select_min} AS stok_minimum,
+               {select_unit} AS unit
+        FROM {escape_table_name(table_name)}
+        ORDER BY {name_col}
+        """
+    )
+    rows = cursor.fetchall()
+    cursor.close()
+
+    data = []
+    for row in rows:
+        stok = float(row.get('stok') or 0)
+        stok_minimum = float(row.get('stok_minimum') or 0)
+        status = compute_stock_status(stok, stok_minimum)
+        data.append({
+            'nama_bahan': row.get('nama_bahan'),
+            'stok': stok,
+            'stok_minimum': stok_minimum,
+            'status': status,
+            'unit': row.get('unit') or 'kg'
+        })
+
+    return data, None
+
 def grams_to_kg_rounded(grams: float) -> float:
     """
     Convert grams to kilograms with rounding rules:
@@ -925,6 +1004,205 @@ def save_prediction():
     except Exception as e:
         logger.error(f"Save prediction error: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+# ============================================================================
+# REPORT ENDPOINTS - LAPORAN
+# ============================================================================
+
+@app.route('/laporan/stok', methods=['GET'])
+def laporan_stok():
+    """Laporan stok bahan dari tabel bahan/products."""
+    try:
+        connection = get_db_connection()
+        if not connection:
+            return build_report_response(False, 'Database connection failed', [], 500)
+
+        data, error_message = fetch_stock_report(connection)
+        connection.close()
+
+        if error_message:
+            return build_report_response(False, error_message, [], 404)
+
+        return build_report_response(True, 'Data berhasil diambil', data, 200)
+    except Exception as e:
+        logger.error(f"Laporan stok error: {str(e)}")
+        return build_report_response(False, f'Gagal mengambil data: {str(e)}', [], 500)
+
+
+@app.route('/laporan/bahan-kritis', methods=['GET'])
+def laporan_bahan_kritis():
+    """Laporan bahan kritis/ rendah berdasarkan stok minimum."""
+    try:
+        connection = get_db_connection()
+        if not connection:
+            return build_report_response(False, 'Database connection failed', [], 500)
+
+        data, error_message = fetch_stock_report(connection)
+        connection.close()
+
+        if error_message:
+            return build_report_response(False, error_message, [], 404)
+
+        critical_items = [
+            item for item in data
+            if item['status'] in ['Rendah', 'Kritis']
+        ]
+
+        return build_report_response(True, 'Data berhasil diambil', critical_items, 200)
+    except Exception as e:
+        logger.error(f"Laporan bahan kritis error: {str(e)}")
+        return build_report_response(False, f'Gagal mengambil data: {str(e)}', [], 500)
+
+
+@app.route('/laporan/stok-masuk', methods=['GET'])
+def laporan_stok_masuk():
+    """Laporan riwayat stok masuk dari tabel stok_masuk/Stock In/transactions."""
+    try:
+        connection = get_db_connection()
+        if not connection:
+            return build_report_response(False, 'Database connection failed', [], 500)
+
+        table_name = get_existing_table(connection, ['stok_masuk', 'Stock In', 'transactions'])
+        if not table_name:
+            connection.close()
+            return build_report_response(False, 'Tabel stok_masuk/transactions tidak ditemukan', [], 404)
+
+        name_col = get_existing_column(connection, table_name, ['nama_bahan', 'product_name', 'name'])
+        qty_col = get_existing_column(connection, table_name, ['jumlah', 'quantity'])
+        date_col = get_existing_column(connection, table_name, ['tanggal', 'transaction_date', 'created_at'])
+        unit_col = get_existing_column(connection, table_name, ['unit'])
+        product_id_col = get_existing_column(connection, table_name, ['product_id', 'produk_id', 'bahan_id'])
+
+        if not qty_col or not date_col:
+            connection.close()
+            return build_report_response(False, 'Kolom stok masuk tidak lengkap', [], 500)
+
+        cursor = connection.cursor(dictionary=True)
+        table_sql = escape_table_name(table_name)
+
+        if not name_col and product_id_col:
+            product_table = get_existing_table(connection, ['products', 'bahan'])
+            if product_table:
+                product_name_col = get_existing_column(connection, product_table, ['nama_bahan', 'product_name', 'name'])
+                product_unit_col = get_existing_column(connection, product_table, ['unit'])
+                if product_name_col:
+                    cursor.execute(
+                        f"""
+                        SELECT p.{product_name_col} AS nama_bahan,
+                               sm.{qty_col} AS jumlah,
+                               sm.{date_col} AS tanggal,
+                               p.{product_unit_col} AS unit
+                        FROM {table_sql} sm
+                        JOIN {escape_table_name(product_table)} p ON p.id = sm.{product_id_col}
+                        ORDER BY sm.{date_col} DESC
+                        """
+                    )
+                else:
+                    cursor.execute(
+                        f"""
+                        SELECT sm.{qty_col} AS jumlah,
+                               sm.{date_col} AS tanggal
+                        FROM {table_sql} sm
+                        ORDER BY sm.{date_col} DESC
+                        """
+                    )
+            else:
+                cursor.execute(
+                    f"""
+                    SELECT sm.{qty_col} AS jumlah,
+                           sm.{date_col} AS tanggal
+                    FROM {table_sql} sm
+                    ORDER BY sm.{date_col} DESC
+                    """
+                )
+        else:
+            unit_select = unit_col if unit_col else "''"
+            cursor.execute(
+                f"""
+                SELECT {name_col} AS nama_bahan,
+                       {qty_col} AS jumlah,
+                       {date_col} AS tanggal,
+                       {unit_select} AS unit
+                FROM {table_sql}
+                ORDER BY {date_col} DESC
+                """
+            )
+
+        rows = cursor.fetchall()
+        cursor.close()
+        connection.close()
+
+        data = []
+        for row in rows:
+            data.append({
+                'nama_bahan': row.get('nama_bahan'),
+                'jumlah': float(row.get('jumlah') or 0),
+                'tanggal': row.get('tanggal'),
+                'unit': row.get('unit') or 'kg'
+            })
+
+        return build_report_response(True, 'Data berhasil diambil', data, 200)
+    except Exception as e:
+        logger.error(f"Laporan stok masuk error: {str(e)}")
+        return build_report_response(False, f'Gagal mengambil data: {str(e)}', [], 500)
+
+
+@app.route('/laporan/prediksi', methods=['GET'])
+def laporan_prediksi():
+    """Laporan prediksi permintaan dari tabel prediksi/predictions."""
+    try:
+        connection = get_db_connection()
+        if not connection:
+            return build_report_response(False, 'Database connection failed', [], 500)
+
+        table_name = get_existing_table(connection, ['prediksi', 'predictions'])
+        if not table_name:
+            connection.close()
+            return build_report_response(False, 'Tabel prediksi/predictions tidak ditemukan', [], 404)
+
+        name_col = get_existing_column(connection, table_name, ['nama_produk', 'product_name', 'name'])
+        result_col = get_existing_column(connection, table_name, ['hasil_prediksi', 'predicted_quantity'])
+        estimate_col = get_existing_column(connection, table_name, ['estimasi_kebutuhan_bahan', 'estimated_needs', 'raw_value'])
+        date_col = get_existing_column(connection, table_name, ['tanggal_prediksi', 'prediction_date', 'created_at'])
+
+        if not result_col or not date_col:
+            connection.close()
+            return build_report_response(False, 'Kolom prediksi tidak lengkap', [], 500)
+
+        cursor = connection.cursor(dictionary=True)
+        table_sql = escape_table_name(table_name)
+        estimate_select = estimate_col if estimate_col else 'NULL'
+        name_select = name_col if name_col else "''"
+
+        cursor.execute(
+            f"""
+            SELECT {name_select} AS nama_produk,
+                   {result_col} AS hasil_prediksi,
+                   {estimate_select} AS estimasi_kebutuhan_bahan,
+                   {date_col} AS tanggal_prediksi
+            FROM {table_sql}
+            ORDER BY {date_col} DESC
+            """
+        )
+
+        rows = cursor.fetchall()
+        cursor.close()
+        connection.close()
+
+        data = []
+        for row in rows:
+            data.append({
+                'nama_produk': row.get('nama_produk'),
+                'hasil_prediksi': float(row.get('hasil_prediksi') or 0),
+                'estimasi_kebutuhan_bahan': row.get('estimasi_kebutuhan_bahan'),
+                'tanggal_prediksi': row.get('tanggal_prediksi')
+            })
+
+        return build_report_response(True, 'Data berhasil diambil', data, 200)
+    except Exception as e:
+        logger.error(f"Laporan prediksi error: {str(e)}")
+        return build_report_response(False, f'Gagal mengambil data: {str(e)}', [], 500)
 
 
 # ============================================================================
