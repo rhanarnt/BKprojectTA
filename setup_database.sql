@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS predictions (
     predicted_quantity INT NOT NULL,
     raw_value FLOAT,
     estimated_total_price INT,
+    estimated_needs TEXT,
     accuracy_r2 FLOAT,
     error_mae FLOAT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

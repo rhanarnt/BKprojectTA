@@ -97,6 +97,61 @@ def build_report_response(success: bool, message: str, data: list | None = None,
         'data': data or []
     }), status_code
 
+def ensure_prediction_needs_column(connection, table_name: str = 'predictions') -> str | None:
+    needs_col = get_existing_column(
+        connection,
+        table_name,
+        ['estimated_needs', 'estimasi_kebutuhan_bahan']
+    )
+    if needs_col:
+        return needs_col
+
+    if not table_exists(connection, table_name):
+        return None
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            f"ALTER TABLE {escape_table_name(table_name)} ADD COLUMN estimated_needs TEXT"
+        )
+        connection.commit()
+        return 'estimated_needs'
+    except Error as e:
+        logger.warning(f"Could not add estimated_needs column: {e}")
+        return None
+    finally:
+        cursor.close()
+
+def ensure_stock_usage_tables(connection):
+    cursor = connection.cursor()
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS stock_usage_history (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                recipe_name VARCHAR(255),
+                production_quantity INT,
+                product_id INT,
+                product_name VARCHAR(255) NOT NULL,
+                quantity_used FLOAT NOT NULL,
+                unit VARCHAR(50),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS stok_keluar (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                bahan_id INT,
+                jumlah_keluar FLOAT NOT NULL,
+                satuan VARCHAR(50) DEFAULT 'kg',
+                tanggal_keluar DATE NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """)
+        connection.commit()
+    finally:
+        cursor.close()
+
 def compute_stock_status(stok: float, stok_minimum: float) -> str:
     if stok > stok_minimum:
         return 'Aman'
@@ -105,7 +160,8 @@ def compute_stock_status(stok: float, stok_minimum: float) -> str:
     return 'Kritis'
 
 def fetch_stock_report(connection):
-    table_name = get_existing_table(connection, ['bahan', 'products'])
+    # Prioritaskan tabel products agar stok kritis mengikuti data produk aktif.
+    table_name = get_existing_table(connection, ['products', 'bahan'])
     if not table_name:
         return None, 'Tabel bahan atau products tidak ditemukan'
 
@@ -149,6 +205,173 @@ def fetch_stock_report(connection):
 
     return data, None
 
+
+def fetch_penggunaan_bahan(connection):
+    table_name = get_existing_table(connection, ['stok_keluar', 'stock_usage_history'])
+    if not table_name:
+        return []
+
+    cursor = connection.cursor(dictionary=True)
+
+    if table_name == 'stock_usage_history':
+        cursor.execute(
+            f"""
+            SELECT product_name AS nama_bahan,
+                   COALESCE(SUM(quantity_used), 0) AS total_digunakan,
+                   COALESCE(unit, 'kg') AS satuan
+            FROM {escape_table_name(table_name)}
+            GROUP BY product_name, unit
+            ORDER BY total_digunakan DESC
+            LIMIT 5
+            """
+        )
+    else:
+        name_col = get_existing_column(connection, table_name, ['nama_bahan'])
+        qty_col = get_existing_column(connection, table_name, ['jumlah_keluar', 'quantity_used', 'jumlah'])
+        unit_col = get_existing_column(connection, table_name, ['satuan', 'unit'])
+        bahan_id_col = get_existing_column(connection, table_name, ['bahan_id', 'product_id'])
+
+        if name_col and qty_col:
+            unit_select = unit_col if unit_col else "'kg'"
+            cursor.execute(
+                f"""
+                SELECT {name_col} AS nama_bahan,
+                       COALESCE(SUM({qty_col}), 0) AS total_digunakan,
+                       {unit_select} AS satuan
+                FROM {escape_table_name(table_name)}
+                GROUP BY {name_col}, {unit_select}
+                ORDER BY total_digunakan DESC
+                LIMIT 5
+                """
+            )
+        elif bahan_id_col and qty_col:
+            bahan_table = get_existing_table(connection, ['bahan', 'products'])
+            if not bahan_table:
+                cursor.close()
+                return []
+
+            bahan_name_col = get_existing_column(connection, bahan_table, ['nama_bahan', 'product_name', 'name'])
+            bahan_unit_col = get_existing_column(connection, bahan_table, ['satuan', 'unit'])
+            if not bahan_name_col:
+                cursor.close()
+                return []
+
+            unit_select = f"b.{bahan_unit_col}" if bahan_unit_col else "'kg'"
+            cursor.execute(
+                f"""
+                SELECT b.{bahan_name_col} AS nama_bahan,
+                       COALESCE(SUM(k.{qty_col}), 0) AS total_digunakan,
+                       {unit_select} AS satuan
+                FROM {escape_table_name(table_name)} k
+                JOIN {escape_table_name(bahan_table)} b ON b.id = k.{bahan_id_col}
+                GROUP BY b.{bahan_name_col}, {unit_select}
+                ORDER BY total_digunakan DESC
+                LIMIT 5
+                """
+            )
+        else:
+            cursor.close()
+            return []
+
+    rows = cursor.fetchall()
+    cursor.close()
+
+    data = []
+    for row in rows:
+        data.append({
+            'nama_bahan': row.get('nama_bahan'),
+            'total_digunakan': float(row.get('total_digunakan') or 0),
+            'satuan': row.get('satuan') or 'kg'
+        })
+
+    return data
+
+
+def getBahanDigunakanHariIni(connection):
+    """Total bahan keluar hari ini dari stok_keluar, fallback ke stock_usage_history."""
+    table_name = get_existing_table(connection, ['stok_keluar'])
+    totalBahanDigunakanHariIni = 0
+
+    if table_name:
+        qty_col = get_existing_column(connection, table_name, ['jumlah_keluar'])
+        date_col = get_existing_column(connection, table_name, ['tanggal_keluar'])
+        created_col = get_existing_column(connection, table_name, ['created_at'])
+
+        if qty_col:
+            table_sql = escape_table_name(table_name)
+            cursor = connection.cursor()
+
+            if date_col and created_col:
+                cursor.execute(
+                    f"""
+                    SELECT COALESCE(SUM({qty_col}), 0)
+                    FROM {table_sql}
+                    WHERE (
+                        {date_col} >= CURDATE()
+                        AND {date_col} < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+                    )
+                    OR (
+                        {date_col} IS NULL
+                        AND {created_col} >= CURDATE()
+                        AND {created_col} < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+                    )
+                    """
+                )
+            elif date_col:
+                cursor.execute(
+                    f"""
+                    SELECT COALESCE(SUM({qty_col}), 0)
+                    FROM {table_sql}
+                    WHERE {date_col} >= CURDATE()
+                      AND {date_col} < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+                    """
+                )
+            elif created_col:
+                cursor.execute(
+                    f"""
+                    SELECT COALESCE(SUM({qty_col}), 0)
+                    FROM {table_sql}
+                    WHERE {created_col} >= CURDATE()
+                      AND {created_col} < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+                    """
+                )
+            else:
+                cursor.close()
+                cursor = None
+
+            if cursor:
+                totalBahanDigunakanHariIni = cursor.fetchone()[0] or 0
+                cursor.close()
+
+    if float(totalBahanDigunakanHariIni or 0) == 0 and table_exists(connection, 'stock_usage_history'):
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT quantity_used, unit
+            FROM stock_usage_history
+            WHERE created_at >= CURDATE()
+              AND created_at < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+            """
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        totalBahanDigunakanHariIni = sum(
+            convert_stock_quantity(
+                float(row.get('quantity_used') or 0),
+                row.get('unit') or 'kg',
+                'kg'
+            )
+            for row in rows
+        )
+
+    total = float(totalBahanDigunakanHariIni)
+
+    return {
+        'total': int(total) if total.is_integer() else total,
+        'satuan': 'kg',
+        'keterangan': 'total penggunaan hari ini'
+    }
+
 def grams_to_kg_rounded(grams: float) -> float:
     """
     Convert grams to kilograms with rounding rules:
@@ -163,6 +386,49 @@ def grams_to_kg_rounded(grams: float) -> float:
     if grams <= 1000:
         return 1.0
     return math.ceil(grams / 500.0) * 0.5
+
+def normalize_stock_unit(unit: str | None) -> str:
+    normalized = (unit or '').strip().lower()
+    if normalized in ['g', 'gr', 'gram', 'grams']:
+        return 'gr'
+    if normalized in ['kg', 'kilogram', 'kilograms']:
+        return 'kg'
+    if normalized in ['ml', 'mili', 'mililiter', 'milliliter']:
+        return 'ml'
+    if normalized in ['l', 'lt', 'ltr', 'liter', 'litre']:
+        return 'l'
+    if normalized in ['butir', 'pcs', 'piece', 'pieces']:
+        return 'butir'
+    return normalized
+
+def convert_stock_quantity(quantity: float, from_unit: str, to_unit: str) -> float:
+    unit = normalize_stock_unit(from_unit)
+    stock_unit = normalize_stock_unit(to_unit)
+
+    if unit == stock_unit or not unit or not stock_unit:
+        return quantity
+    if unit == 'gr' and stock_unit == 'kg':
+        return quantity / 1000
+    if unit == 'kg' and stock_unit == 'gr':
+        return quantity * 1000
+    if unit == 'ml' and stock_unit == 'kg':
+        return quantity / 1000
+    if unit == 'l' and stock_unit == 'kg':
+        return quantity
+    if unit == 'kg' and stock_unit == 'ml':
+        return quantity * 1000
+    if unit == 'kg' and stock_unit == 'l':
+        return quantity
+    if unit == 'ml' and stock_unit == 'gr':
+        return quantity
+    if unit == 'gr' and stock_unit == 'ml':
+        return quantity
+    if unit == 'l' and stock_unit == 'ml':
+        return quantity * 1000
+    if unit == 'ml' and stock_unit == 'l':
+        return quantity / 1000
+
+    return quantity
 
 # ============================================================================
 # LOAD MODELS AT STARTUP
@@ -575,9 +841,22 @@ def consume_stock():
         if not connection:
             return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
 
+        ensure_stock_usage_tables(connection)
+
         name_column = get_product_name_column(connection)
         unit_column_exists = has_product_unit_column(connection)
         history_enabled = table_exists(connection, 'stock_usage_history')
+        stock_out_enabled = table_exists(connection, 'stok_keluar')
+        stock_out_product_col = None
+        stock_out_qty_col = None
+        stock_out_unit_col = None
+        stock_out_date_col = None
+        if stock_out_enabled:
+            stock_out_product_col = get_existing_column(connection, 'stok_keluar', ['bahan_id', 'product_id'])
+            stock_out_qty_col = get_existing_column(connection, 'stok_keluar', ['jumlah_keluar'])
+            stock_out_unit_col = get_existing_column(connection, 'stok_keluar', ['satuan', 'unit'])
+            stock_out_date_col = get_existing_column(connection, 'stok_keluar', ['tanggal_keluar'])
+            stock_out_enabled = bool(stock_out_product_col and stock_out_qty_col)
 
         cursor = connection.cursor(dictionary=True)
         started_transaction = True
@@ -623,26 +902,16 @@ def consume_stock():
                 continue
 
             product_unit = (product.get('unit') or '').strip().lower()
-            effective_quantity = quantity
-            effective_unit = unit or product_unit
+            effective_unit = normalize_stock_unit(product_unit or unit)
+            effective_quantity = convert_stock_quantity(
+                float(quantity),
+                unit or effective_unit,
+                effective_unit
+            )
 
-            if unit in ['g', 'gram', 'grams']:
-                try:
-                    effective_quantity = grams_to_kg_rounded(float(quantity))
-                    effective_unit = 'kg'
-                    logger.info(
-                        f"[stock/consume] Rounded grams to kg: {quantity}g -> {effective_quantity}kg (product_id={product.get('id')})"
-                    )
-                except ValueError:
-                    errors.append({
-                        'item': item,
-                        'message': 'Quantity gram harus lebih dari 0'
-                    })
-                    continue
-            else:
-                logger.info(
-                    f"[stock/consume] Using quantity without gram rounding: {quantity} {effective_unit} (product_id={product.get('id')})"
-                )
+            logger.info(
+                f"[stock/consume] Using quantity: {quantity} {unit or effective_unit} -> {effective_quantity} {effective_unit} (product_id={product.get('id')})"
+            )
 
             if product['current_stock'] < effective_quantity:
                 errors.append({
@@ -693,6 +962,24 @@ def consume_stock():
                         quantity,
                         entry['unit']
                     )
+                )
+
+            if stock_out_enabled:
+                columns = [stock_out_product_col, stock_out_qty_col]
+                values = [product['id'], quantity]
+
+                if stock_out_unit_col:
+                    columns.append(stock_out_unit_col)
+                    values.append(entry['unit'])
+                if stock_out_date_col:
+                    columns.append(stock_out_date_col)
+                    values.append(datetime.now().date())
+
+                column_sql = ', '.join(columns)
+                placeholders = ', '.join(['%s'] * len(columns))
+                cursor.execute(
+                    f"INSERT INTO stok_keluar ({column_sql}) VALUES ({placeholders})",
+                    tuple(values)
                 )
 
             results.append({
@@ -970,13 +1257,21 @@ def save_prediction():
         if not connection:
             return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
 
-        cursor = connection.cursor()
-        cursor.execute("""
-            INSERT INTO predictions
-            (product_name, category, unit_price, prediction_date, predicted_quantity,
-             raw_value, estimated_total_price, accuracy_r2, error_mae)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (
+        table_name = 'predictions'
+        needs_col = ensure_prediction_needs_column(connection, table_name)
+
+        columns = [
+            'product_name',
+            'category',
+            'unit_price',
+            'prediction_date',
+            'predicted_quantity',
+            'raw_value',
+            'estimated_total_price',
+            'accuracy_r2',
+            'error_mae'
+        ]
+        values = [
             data['product_name'],
             data['category'],
             data['unit_price'],
@@ -986,7 +1281,19 @@ def save_prediction():
             data.get('estimated_total_price'),
             data.get('accuracy_r2'),
             data.get('error_mae')
-        ))
+        ]
+
+        if needs_col:
+            columns.append(needs_col)
+            values.append(data.get('estimated_needs') or data.get('estimasi_kebutuhan_bahan'))
+
+        cursor = connection.cursor()
+        placeholders = ', '.join(['%s'] * len(columns))
+        column_sql = ', '.join(columns)
+        cursor.execute(
+            f"INSERT INTO predictions ({column_sql}) VALUES ({placeholders})",
+            tuple(values)
+        )
         connection.commit()
 
         prediction_id = cursor.lastrowid
@@ -1203,6 +1510,68 @@ def laporan_prediksi():
     except Exception as e:
         logger.error(f"Laporan prediksi error: {str(e)}")
         return build_report_response(False, f'Gagal mengambil data: {str(e)}', [], 500)
+
+
+# ============================================================================
+# DASHBOARD ENDPOINTS
+# ============================================================================
+
+@app.route('/api/dashboard/bahan-digunakan-hari-ini', methods=['GET'])
+def bahanDigunakanHariIni():
+    """Total bahan keluar hari ini dari stok_keluar."""
+    connection = None
+    try:
+        connection = get_db_connection()
+        if not connection:
+            return jsonify({
+                'status': False,
+                'message': 'Database connection failed',
+                'total': 0,
+                'satuan': 'kg',
+                'keterangan': 'total penggunaan hari ini'
+            }), 500
+
+        data = getBahanDigunakanHariIni(connection)
+        return jsonify(data), 200
+    except Exception as e:
+        logger.error(f"Bahan digunakan hari ini error: {str(e)}")
+        return jsonify({
+            'status': False,
+            'message': f'Gagal mengambil data: {str(e)}',
+            'total': 0,
+            'satuan': 'kg',
+            'keterangan': 'total penggunaan hari ini'
+        }), 500
+    finally:
+        if connection:
+            connection.close()
+
+@app.route('/api/dashboard/summary', methods=['GET'])
+def dashboard_summary():
+    """Ringkasan dashboard untuk grafik penggunaan bahan."""
+    try:
+        connection = get_db_connection()
+        if not connection:
+            return jsonify({
+                'status': False,
+                'message': 'Database connection failed',
+                'penggunaan_bahan': []
+            }), 500
+
+        penggunaan = fetch_penggunaan_bahan(connection)
+        connection.close()
+
+        return jsonify({
+            'status': True,
+            'penggunaan_bahan': penggunaan
+        }), 200
+    except Exception as e:
+        logger.error(f"Dashboard summary error: {str(e)}")
+        return jsonify({
+            'status': False,
+            'message': f'Gagal mengambil data: {str(e)}',
+            'penggunaan_bahan': []
+        }), 500
 
 
 # ============================================================================

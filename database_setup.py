@@ -93,6 +93,7 @@ def create_tables():
             predicted_quantity DECIMAL(10, 2),
             raw_value DECIMAL(10, 2),
             estimated_total_price DECIMAL(10, 2),
+            estimated_needs TEXT,
             accuracy_r2 DECIMAL(5, 4),
             error_mae DECIMAL(5, 4),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
