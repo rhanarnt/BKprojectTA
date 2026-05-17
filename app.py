@@ -1442,10 +1442,11 @@ def laporan_stok_masuk():
 
         data = []
         for row in rows:
+            tanggal = row.get('tanggal')
             data.append({
                 'nama_bahan': row.get('nama_bahan'),
                 'jumlah': float(row.get('jumlah') or 0),
-                'tanggal': row.get('tanggal'),
+                'tanggal': tanggal.isoformat() if hasattr(tanggal, 'isoformat') else tanggal,
                 'unit': row.get('unit') or 'kg'
             })
 
@@ -1499,11 +1500,12 @@ def laporan_prediksi():
 
         data = []
         for row in rows:
+            tanggal_prediksi = row.get('tanggal_prediksi')
             data.append({
                 'nama_produk': row.get('nama_produk'),
                 'hasil_prediksi': float(row.get('hasil_prediksi') or 0),
                 'estimasi_kebutuhan_bahan': row.get('estimasi_kebutuhan_bahan'),
-                'tanggal_prediksi': row.get('tanggal_prediksi')
+                'tanggal_prediksi': tanggal_prediksi.isoformat() if hasattr(tanggal_prediksi, 'isoformat') else tanggal_prediksi
             })
 
         return build_report_response(True, 'Data berhasil diambil', data, 200)
