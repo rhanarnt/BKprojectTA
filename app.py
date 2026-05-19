@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 import logging
 import math
+import hashlib
 from datetime import datetime
 import mysql.connector
 from mysql.connector import Error
@@ -96,6 +97,14 @@ def build_report_response(success: bool, message: str, data: list | None = None,
         'message': message,
         'data': data or []
     }), status_code
+
+def verify_login_password(input_password: str, stored_password: str) -> bool:
+    """Accept plain text passwords and SHA-256 hashes for simple local auth."""
+    if input_password == stored_password:
+        return True
+
+    hashed_input = hashlib.sha256(input_password.encode('utf-8')).hexdigest()
+    return hashed_input == stored_password
 
 def ensure_prediction_needs_column(connection, table_name: str = 'predictions') -> str | None:
     needs_col = get_existing_column(
@@ -475,6 +484,64 @@ def get_metadata():
             'total_samples': metadata['total_samples']
         }
     }), 200
+
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    """Login using email/username and password stored in the login table."""
+    try:
+        data = request.json or {}
+        username_or_email = (data.get('email') or data.get('username') or '').strip()
+        password = data.get('password') or ''
+
+        if not username_or_email or not password:
+            return jsonify({
+                'status': 'error',
+                'message': 'Email/username dan password wajib diisi'
+            }), 400
+
+        connection = get_db_connection()
+        if connection is None:
+            return jsonify({
+                'status': 'error',
+                'message': 'Tidak dapat terhubung ke database'
+            }), 500
+
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT id, name, email, username, password
+            FROM login
+            WHERE email = %s OR username = %s
+            LIMIT 1
+        """, (username_or_email, username_or_email))
+        user = cursor.fetchone()
+        cursor.close()
+        connection.close()
+
+        if user is None or not verify_login_password(password, user['password']):
+            return jsonify({
+                'status': 'error',
+                'message': 'Email/username atau password salah'
+            }), 401
+
+        user.pop('password', None)
+        return jsonify({
+            'status': 'success',
+            'message': 'Login berhasil',
+            'data': user
+        }), 200
+    except Error as e:
+        logger.error(f"Login database error: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': 'Tabel login belum tersedia atau database bermasalah'
+        }), 500
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': 'Terjadi kesalahan saat login'
+        }), 500
 
 
 @app.route('/prediksi', methods=['POST'])

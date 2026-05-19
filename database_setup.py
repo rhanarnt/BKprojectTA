@@ -102,6 +102,19 @@ def create_tables():
         """)
         logger.info("✅ Predictions table created successfully")
 
+        # Login table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS login (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            name VARCHAR(100) NOT NULL,
+            email VARCHAR(100) NOT NULL UNIQUE,
+            username VARCHAR(50) NOT NULL UNIQUE,
+            password VARCHAR(255) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        logger.info("Login table created successfully")
+
         connection.commit()
         cursor.close()
         connection.close()
@@ -134,6 +147,29 @@ def insert_default_products():
         return True
     except Error as err:
         print(f"❌ Error inserting products: {err}")
+        return False
+
+def insert_default_login():
+    """Insert default login account"""
+    try:
+        connection = mysql.connector.connect(**DB_CONFIG)
+        cursor = connection.cursor()
+
+        cursor.execute("""
+        INSERT INTO login (name, email, username, password)
+        VALUES (%s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            name = VALUES(name),
+            username = VALUES(username)
+        """, ('Ibu Sulastri', 'admin@sulastri.com', 'admin', 'password'))
+
+        connection.commit()
+        logger.info("Default login account ready")
+        cursor.close()
+        connection.close()
+        return True
+    except Error as err:
+        print(f"Error inserting login account: {err}")
         return False
 
 def verify_connection():
@@ -169,6 +205,9 @@ def main():
         return
 
     if not insert_default_products():
+        return
+
+    if not insert_default_login():
         return
 
     verify_connection()

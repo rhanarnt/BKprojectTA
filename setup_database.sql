@@ -59,6 +59,16 @@ CREATE TABLE IF NOT EXISTS predictions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Create Login Table
+CREATE TABLE IF NOT EXISTS login (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(100) NOT NULL UNIQUE,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Create Recipes Table
 CREATE TABLE IF NOT EXISTS recipes (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -87,6 +97,13 @@ INSERT INTO products (name, category, product_type, unit, price, current_stock) 
 ('Mentega 500gr', 'Mentega', 'Bahan', 'kg', 22000, 25),
 ('Keju Parut 250gr', 'Keju', 'Bahan', 'kg', 28000, 10),
 ('Baking Powder', 'Bahan Tambahan', 'Bahan', 'kg', 8000, 35);
+
+-- Insert Default Login Account
+INSERT INTO login (name, email, username, password) VALUES
+('Ibu Sulastri', 'admin@sulastri.com', 'admin', 'password')
+ON DUPLICATE KEY UPDATE
+    name = VALUES(name),
+    username = VALUES(username);
 
 -- Insert Sample Recipes
 INSERT INTO recipes (recipe_name, description) VALUES
