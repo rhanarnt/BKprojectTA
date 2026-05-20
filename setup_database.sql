@@ -69,6 +69,18 @@ CREATE TABLE IF NOT EXISTS login (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Create Password Reset OTP Table
+CREATE TABLE IF NOT EXISTS password_reset_otps (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    login_id INT NOT NULL,
+    email VARCHAR(100) NOT NULL,
+    otp_code VARCHAR(10) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    is_used TINYINT(1) DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (login_id) REFERENCES login(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Create Recipes Table
 CREATE TABLE IF NOT EXISTS recipes (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -100,9 +112,10 @@ INSERT INTO products (name, category, product_type, unit, price, current_stock) 
 
 -- Insert Default Login Account
 INSERT INTO login (name, email, username, password) VALUES
-('Ibu Sulastri', 'admin@sulastri.com', 'admin', 'password')
+('Ibu Sulastri', 'sulastri.aritanto10@gmail.com', 'admin', 'password')
 ON DUPLICATE KEY UPDATE
     name = VALUES(name),
+    email = VALUES(email),
     username = VALUES(username);
 
 -- Insert Sample Recipes

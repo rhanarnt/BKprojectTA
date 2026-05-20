@@ -5,15 +5,44 @@ Menggunakan Random Forest Model
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from email.message import EmailMessage
 import joblib
 import pandas as pd
 import numpy as np
 import logging
 import math
 import hashlib
-from datetime import datetime
+import secrets
+import os
+import smtplib
+from datetime import datetime, timedelta
 import mysql.connector
 from mysql.connector import Error
+
+
+def load_env_file():
+    """Load simple KEY=VALUE pairs from ml_model/.env if present."""
+    env_path = os.path.join(os.path.dirname(__file__), '.env')
+    if not os.path.exists(env_path):
+        return
+
+    try:
+        with open(env_path, 'r', encoding='utf-8') as env_file:
+            for raw_line in env_file:
+                line = raw_line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+
+                key, value = line.split('=', 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key:
+                    os.environ[key] = value
+    except OSError as e:
+        print(f"Failed to load .env file: {e}")
+
+
+load_env_file()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +58,14 @@ DB_HOST = 'localhost'
 DB_USER = 'root'
 DB_PASSWORD = ''  # Ganti dengan password MySQL Anda jika ada
 DB_NAME = 'prediksi_stok_db'
+
+# Email/SMTP configuration for OTP delivery.
+# For Gmail, use an App Password, not the regular Gmail password.
+SMTP_HOST = os.getenv('SMTP_HOST', 'smtp.gmail.com')
+SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
+SMTP_EMAIL = os.getenv('SMTP_EMAIL', '')
+SMTP_PASSWORD = os.getenv('SMTP_APP_PASSWORD', '').replace(' ', '')
+SMTP_SENDER_NAME = os.getenv('SMTP_SENDER_NAME', 'Tobaku Sulastri')
 
 # Table names (use backticks for names with spaces)
 TRANSACTIONS_TABLE = "`Stock In`"
@@ -105,6 +142,48 @@ def verify_login_password(input_password: str, stored_password: str) -> bool:
 
     hashed_input = hashlib.sha256(input_password.encode('utf-8')).hexdigest()
     return hashed_input == stored_password
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode('utf-8')).hexdigest()
+
+def send_otp_email(recipient_email: str, otp_code: str) -> None:
+    if not SMTP_EMAIL or not SMTP_PASSWORD:
+        raise RuntimeError(
+            'SMTP_EMAIL dan SMTP_APP_PASSWORD belum dikonfigurasi'
+        )
+
+    message = EmailMessage()
+    message['Subject'] = 'Kode OTP Reset Password Tobaku Sulastri'
+    message['From'] = f'{SMTP_SENDER_NAME} <{SMTP_EMAIL}>'
+    message['To'] = recipient_email
+    message.set_content(
+        f"""Halo,
+
+Kode OTP untuk reset password aplikasi Tobaku Sulastri adalah:
+
+{otp_code}
+
+Kode ini berlaku selama 10 menit. Abaikan email ini jika Anda tidak meminta reset password.
+
+Terima kasih,
+Tobaku Sulastri
+"""
+    )
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+        server.starttls()
+        server.login(SMTP_EMAIL, SMTP_PASSWORD)
+        server.send_message(message)
+
+def mask_email(email: str) -> str:
+    if '@' not in email:
+        return email
+    name, domain = email.split('@', 1)
+    if len(name) <= 2:
+        masked_name = name[0] + '*'
+    else:
+        masked_name = name[:2] + ('*' * max(2, len(name) - 2))
+    return f'{masked_name}@{domain}'
 
 def ensure_prediction_needs_column(connection, table_name: str = 'predictions') -> str | None:
     needs_col = get_existing_column(
@@ -541,6 +620,324 @@ def login():
         return jsonify({
             'status': 'error',
             'message': 'Terjadi kesalahan saat login'
+        }), 500
+
+
+@app.route('/api/forgot-password/send-otp', methods=['POST'])
+def send_forgot_password_otp():
+    """Create OTP for password reset and send it to the account email."""
+    try:
+        data = request.json or {}
+        username_or_email = (data.get('email') or data.get('username') or '').strip()
+
+        if not username_or_email:
+            return jsonify({
+                'status': 'error',
+                'message': 'Email/username wajib diisi'
+            }), 400
+
+        connection = get_db_connection()
+        if connection is None:
+            return jsonify({
+                'status': 'error',
+                'message': 'Tidak dapat terhubung ke database'
+            }), 500
+
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT id, name, email, username
+            FROM login
+            WHERE email = %s OR username = %s
+            LIMIT 1
+        """, (username_or_email, username_or_email))
+        user = cursor.fetchone()
+        cursor.close()
+        connection.close()
+
+        if user is None:
+            return jsonify({
+                'status': 'error',
+                'message': 'Akun tidak ditemukan'
+            }), 404
+
+        otp_code = f"{secrets.randbelow(1000000):06d}"
+        expires_at = datetime.now() + timedelta(minutes=10)
+
+        send_otp_email(user['email'], otp_code)
+
+        connection = get_db_connection()
+        if connection is None:
+            return jsonify({
+                'status': 'error',
+                'message': 'Tidak dapat terhubung ke database'
+            }), 500
+
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute("""
+            INSERT INTO password_reset_otps (login_id, email, otp_code, expires_at)
+            VALUES (%s, %s, %s, %s)
+        """, (user['id'], user['email'], otp_code, expires_at))
+
+        connection.commit()
+        cursor.close()
+        connection.close()
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Kode OTP berhasil dikirim ke email. Berlaku selama 10 menit.',
+            'data': {
+                'email': mask_email(user['email'])
+            }
+        }), 200
+    except RuntimeError as e:
+        logger.error(f"Send OTP configuration error: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+    except smtplib.SMTPAuthenticationError as e:
+        logger.error(f"Send OTP SMTP authentication error: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': 'Gagal login ke Gmail. Gunakan App Password Gmail, bukan password email biasa.'
+        }), 500
+    except smtplib.SMTPException as e:
+        logger.error(f"Send OTP SMTP error: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': 'Gagal mengirim OTP ke email. Periksa konfigurasi SMTP dan koneksi internet.'
+        }), 500
+    except Error as e:
+        logger.error(f"Send OTP database error: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': 'Tabel OTP belum tersedia atau database bermasalah'
+        }), 500
+    except Exception as e:
+        logger.error(f"Send OTP error: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': 'Terjadi kesalahan saat membuat OTP'
+        }), 500
+
+
+@app.route('/api/change-password', methods=['POST'])
+def change_password():
+    """Change password for a logged-in account using the current password."""
+    try:
+        data = request.json or {}
+        username_or_email = (data.get('email') or data.get('username') or '').strip()
+        current_password = data.get('current_password') or ''
+        new_password = data.get('new_password') or ''
+
+        if not username_or_email or not current_password or not new_password:
+            return jsonify({
+                'status': 'error',
+                'message': 'Email/username, password lama, dan password baru wajib diisi'
+            }), 400
+
+        if len(new_password) < 6:
+            return jsonify({
+                'status': 'error',
+                'message': 'Password baru minimal 6 karakter'
+            }), 400
+
+        connection = get_db_connection()
+        if connection is None:
+            return jsonify({
+                'status': 'error',
+                'message': 'Tidak dapat terhubung ke database'
+            }), 500
+
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT id, password
+            FROM login
+            WHERE email = %s OR username = %s
+            LIMIT 1
+        """, (username_or_email, username_or_email))
+        user = cursor.fetchone()
+
+        if user is None:
+            cursor.close()
+            connection.close()
+            return jsonify({
+                'status': 'error',
+                'message': 'Akun tidak ditemukan'
+            }), 404
+
+        if not verify_login_password(current_password, user['password']):
+            cursor.close()
+            connection.close()
+            return jsonify({
+                'status': 'error',
+                'message': 'Password lama tidak sesuai'
+            }), 400
+
+        cursor.execute(
+            "UPDATE login SET password = %s WHERE id = %s",
+            (hash_password(new_password), user['id'])
+        )
+        connection.commit()
+        cursor.close()
+        connection.close()
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Password berhasil diperbarui'
+        }), 200
+    except Error as e:
+        logger.error(f"Change password database error: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': 'Database bermasalah saat mengubah password'
+        }), 500
+    except Exception as e:
+        logger.error(f"Change password error: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': 'Terjadi kesalahan saat mengubah password'
+        }), 500
+
+
+@app.route('/api/forgot-password/verify-otp', methods=['POST'])
+def verify_forgot_password_otp():
+    """Verify OTP before allowing password reset."""
+    try:
+        data = request.json or {}
+        username_or_email = (data.get('email') or data.get('username') or '').strip()
+        otp_code = (data.get('otp') or '').strip()
+
+        if not username_or_email or not otp_code:
+            return jsonify({
+                'status': 'error',
+                'message': 'Email/username dan OTP wajib diisi'
+            }), 400
+
+        connection = get_db_connection()
+        if connection is None:
+            return jsonify({
+                'status': 'error',
+                'message': 'Tidak dapat terhubung ke database'
+            }), 500
+
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT o.id
+            FROM password_reset_otps o
+            JOIN login l ON l.id = o.login_id
+            WHERE (l.email = %s OR l.username = %s)
+              AND o.otp_code = %s
+              AND o.is_used = 0
+              AND o.expires_at >= NOW()
+            ORDER BY o.created_at DESC
+            LIMIT 1
+        """, (username_or_email, username_or_email, otp_code))
+        otp = cursor.fetchone()
+        cursor.close()
+        connection.close()
+
+        if otp is None:
+            return jsonify({
+                'status': 'error',
+                'message': 'OTP salah atau sudah kedaluwarsa'
+            }), 400
+
+        return jsonify({
+            'status': 'success',
+            'message': 'OTP valid'
+        }), 200
+    except Error as e:
+        logger.error(f"Verify OTP database error: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': 'Tabel OTP belum tersedia atau database bermasalah'
+        }), 500
+    except Exception as e:
+        logger.error(f"Verify OTP error: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': 'Terjadi kesalahan saat verifikasi OTP'
+        }), 500
+
+
+@app.route('/api/forgot-password/reset', methods=['POST'])
+def reset_password_with_otp():
+    """Reset account password after OTP verification."""
+    try:
+        data = request.json or {}
+        username_or_email = (data.get('email') or data.get('username') or '').strip()
+        otp_code = (data.get('otp') or '').strip()
+        new_password = data.get('new_password') or ''
+
+        if not username_or_email or not otp_code or not new_password:
+            return jsonify({
+                'status': 'error',
+                'message': 'Email/username, OTP, dan password baru wajib diisi'
+            }), 400
+
+        if len(new_password) < 6:
+            return jsonify({
+                'status': 'error',
+                'message': 'Password baru minimal 6 karakter'
+            }), 400
+
+        connection = get_db_connection()
+        if connection is None:
+            return jsonify({
+                'status': 'error',
+                'message': 'Tidak dapat terhubung ke database'
+            }), 500
+
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT o.id AS otp_id, l.id AS login_id
+            FROM password_reset_otps o
+            JOIN login l ON l.id = o.login_id
+            WHERE (l.email = %s OR l.username = %s)
+              AND o.otp_code = %s
+              AND o.is_used = 0
+              AND o.expires_at >= NOW()
+            ORDER BY o.created_at DESC
+            LIMIT 1
+        """, (username_or_email, username_or_email, otp_code))
+        otp = cursor.fetchone()
+
+        if otp is None:
+            cursor.close()
+            connection.close()
+            return jsonify({
+                'status': 'error',
+                'message': 'OTP salah atau sudah kedaluwarsa'
+            }), 400
+
+        cursor.execute(
+            "UPDATE login SET password = %s WHERE id = %s",
+            (hash_password(new_password), otp['login_id'])
+        )
+        cursor.execute(
+            "UPDATE password_reset_otps SET is_used = 1 WHERE id = %s",
+            (otp['otp_id'],)
+        )
+        connection.commit()
+        cursor.close()
+        connection.close()
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Password berhasil diperbarui'
+        }), 200
+    except Error as e:
+        logger.error(f"Reset password database error: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': 'Tabel OTP belum tersedia atau database bermasalah'
+        }), 500
+    except Exception as e:
+        logger.error(f"Reset password error: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': 'Terjadi kesalahan saat reset password'
         }), 500
 
 

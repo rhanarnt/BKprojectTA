@@ -115,6 +115,21 @@ def create_tables():
         """)
         logger.info("Login table created successfully")
 
+        # Password reset OTP table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS password_reset_otps (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            login_id INT NOT NULL,
+            email VARCHAR(100) NOT NULL,
+            otp_code VARCHAR(10) NOT NULL,
+            expires_at DATETIME NOT NULL,
+            is_used TINYINT(1) DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (login_id) REFERENCES login(id) ON DELETE CASCADE
+        )
+        """)
+        logger.info("Password reset OTP table created successfully")
+
         connection.commit()
         cursor.close()
         connection.close()
@@ -160,8 +175,9 @@ def insert_default_login():
         VALUES (%s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             name = VALUES(name),
+            email = VALUES(email),
             username = VALUES(username)
-        """, ('Ibu Sulastri', 'admin@sulastri.com', 'admin', 'password'))
+        """, ('Ibu Sulastri', 'sulastri.aritanto10@gmail.com', 'admin', 'password'))
 
         connection.commit()
         logger.info("Default login account ready")
@@ -214,7 +230,7 @@ def main():
 
     print()
     print("=" * 60)
-    print("✅ Database setup completed successfully!")
+    print("Database setup completed successfully!")
     print("=" * 60)
 
 if __name__ == "__main__":
