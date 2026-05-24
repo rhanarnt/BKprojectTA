@@ -108,6 +108,87 @@ def has_product_unit_column(connection) -> bool:
     cursor.close()
     return has_unit
 
+def ensure_product_stock_precision(connection):
+    if not table_exists(connection, 'products'):
+        return
+
+    stock_col = get_existing_column(connection, 'products', ['current_stock'])
+    if not stock_col:
+        return
+
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute("SHOW COLUMNS FROM products LIKE 'current_stock'")
+        column = cursor.fetchone()
+        column_type = (column or {}).get('Type', '').lower()
+        if any(kind in column_type for kind in ['decimal', 'float', 'double']):
+            return
+
+        cursor.execute(
+            "ALTER TABLE products MODIFY current_stock DECIMAL(10,3) NOT NULL DEFAULT 0"
+        )
+        connection.commit()
+    except Error as e:
+        logger.warning(f"Could not update current_stock precision: {e}")
+    finally:
+        cursor.close()
+
+def ensure_product_min_stock_column(connection):
+    if not table_exists(connection, 'products'):
+        return
+
+    min_col = get_existing_column(connection, 'products', ['min_stock'])
+    if min_col:
+        return
+
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "ALTER TABLE products ADD COLUMN min_stock DECIMAL(10,3) NOT NULL DEFAULT 0"
+        )
+        connection.commit()
+    except Error as e:
+        logger.warning(f"Could not add min_stock column: {e}")
+    finally:
+        cursor.close()
+
+def backfill_default_min_stock(connection):
+    if not table_exists(connection, 'products'):
+        return
+
+    min_col = get_existing_column(connection, 'products', ['min_stock'])
+    if not min_col:
+        return
+
+    name_col = get_product_name_column(connection)
+    default_minimums = {
+        'Tepung Terigu 1kg': 10,
+        'Telur 1kg': 5,
+        'Gula Pasir 1kg': 8,
+        'Susu Bubuk': 4,
+        'Cokelat Bubuk 250gr': 3,
+        'Mentega 500gr': 5,
+        'Keju Parut 250gr': 2,
+        'Baking Powder': 2,
+    }
+
+    cursor = connection.cursor()
+    try:
+        for product_name, min_stock in default_minimums.items():
+            cursor.execute(
+                f"""
+                UPDATE products
+                SET {min_col} = %s
+                WHERE {name_col} = %s AND COALESCE({min_col}, 0) = 0
+                """,
+                (min_stock, product_name)
+            )
+        connection.commit()
+    except Error as e:
+        logger.warning(f"Could not backfill min_stock defaults: {e}")
+    finally:
+        cursor.close()
+
 def escape_table_name(table_name: str) -> str:
     return f"`{table_name}`"
 
@@ -252,6 +333,11 @@ def fetch_stock_report(connection):
     table_name = get_existing_table(connection, ['products', 'bahan'])
     if not table_name:
         return None, 'Tabel bahan atau products tidak ditemukan'
+
+    if table_name == 'products':
+        ensure_product_stock_precision(connection)
+        ensure_product_min_stock_column(connection)
+        backfill_default_min_stock(connection)
 
     name_col = get_existing_column(connection, table_name, ['nama_bahan', 'product_name', 'name'])
     stock_col = get_existing_column(connection, table_name, ['stok', 'current_stock', 'stock'])
@@ -1109,6 +1195,10 @@ def get_products():
         if not connection:
             return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
 
+        ensure_product_stock_precision(connection)
+        ensure_product_min_stock_column(connection)
+        backfill_default_min_stock(connection)
+
         cursor = connection.cursor(dictionary=True)
         cursor.execute("SELECT * FROM products ORDER BY name")
         products = cursor.fetchall()
@@ -1184,6 +1274,9 @@ def create_product():
         if not connection:
             return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
 
+        ensure_product_stock_precision(connection)
+        ensure_product_min_stock_column(connection)
+
         cursor = connection.cursor()
 
         # Optional columns compatibility (works for old/new schemas)
@@ -1191,9 +1284,12 @@ def create_product():
         has_unit_column = cursor.fetchone() is not None
         cursor.execute("SHOW COLUMNS FROM products LIKE 'product_type'")
         has_product_type_column = cursor.fetchone() is not None
+        cursor.execute("SHOW COLUMNS FROM products LIKE 'min_stock'")
+        has_min_stock_column = cursor.fetchone() is not None
 
         unit_value = data.get('unit')
         product_type_value = data.get('product_type')
+        min_stock_value = data.get('min_stock', 0)
 
         # Check for duplicate product name
         cursor.execute("SELECT id FROM products WHERE name = %s", (data['name'],))
@@ -1205,55 +1301,24 @@ def create_product():
                 'message': f'Product "{data["name"]}" already exists'
             }), 409
 
-        # Insert new product
-        if has_unit_column and has_product_type_column:
-            cursor.execute("""
-                INSERT INTO products
-                (name, category, price, current_stock, unit, product_type)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, (
-                data['name'],
-                data['category'],
-                data['price'],
-                data['current_stock'],
-                unit_value,
-                product_type_value
-            ))
-        elif has_unit_column:
-            cursor.execute("""
-                INSERT INTO products
-                (name, category, price, current_stock, unit)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (
-                data['name'],
-                data['category'],
-                data['price'],
-                data['current_stock'],
-                unit_value
-            ))
-        elif has_product_type_column:
-            cursor.execute("""
-                INSERT INTO products
-                (name, category, price, current_stock, product_type)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (
-                data['name'],
-                data['category'],
-                data['price'],
-                data['current_stock'],
-                product_type_value
-            ))
-        else:
-            cursor.execute("""
-                INSERT INTO products
-                (name, category, price, current_stock)
-                VALUES (%s, %s, %s, %s)
-            """, (
-                data['name'],
-                data['category'],
-                data['price'],
-                data['current_stock']
-            ))
+        columns = ['name', 'category', 'price', 'current_stock']
+        values = [data['name'], data['category'], data['price'], data['current_stock']]
+        if has_unit_column:
+            columns.append('unit')
+            values.append(unit_value)
+        if has_product_type_column:
+            columns.append('product_type')
+            values.append(product_type_value)
+        if has_min_stock_column:
+            columns.append('min_stock')
+            values.append(min_stock_value)
+
+        column_sql = ', '.join(columns)
+        placeholders = ', '.join(['%s'] * len(columns))
+        cursor.execute(
+            f"INSERT INTO products ({column_sql}) VALUES ({placeholders})",
+            tuple(values)
+        )
         connection.commit()
 
         product_id = cursor.lastrowid
@@ -1304,6 +1369,8 @@ def consume_stock():
         connection = get_db_connection()
         if not connection:
             return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
+
+        ensure_product_stock_precision(connection)
 
         ensure_stock_usage_tables(connection)
 

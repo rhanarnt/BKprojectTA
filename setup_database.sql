@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS products (
     product_type VARCHAR(20) DEFAULT 'Bahan',
     unit VARCHAR(20) DEFAULT 'kg',
     price INT NOT NULL,
-    current_stock INT NOT NULL DEFAULT 0,
+    current_stock DECIMAL(10,3) NOT NULL DEFAULT 0,
+    min_stock DECIMAL(10,3) NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -100,15 +101,15 @@ CREATE TABLE IF NOT EXISTS recipe_ingredients (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Insert Initial Products (8 items)
-INSERT INTO products (name, category, product_type, unit, price, current_stock) VALUES
-('Tepung Terigu 1kg', 'Tepung', 'Bahan', 'kg', 15000, 50),
-('Telur 1kg', 'Telur', 'Bahan', 'kg', 25000, 30),
-('Gula Pasir 1kg', 'Gula', 'Bahan', 'kg', 12000, 40),
-('Susu Bubuk', 'Susu', 'Bahan', 'kg', 20000, 20),
-('Cokelat Bubuk 250gr', 'Cokelat', 'Bahan', 'kg', 18000, 15),
-('Mentega 500gr', 'Mentega', 'Bahan', 'kg', 22000, 25),
-('Keju Parut 250gr', 'Keju', 'Bahan', 'kg', 28000, 10),
-('Baking Powder', 'Bahan Tambahan', 'Bahan', 'kg', 8000, 35);
+INSERT INTO products (name, category, product_type, unit, price, current_stock, min_stock) VALUES
+('Tepung Terigu 1kg', 'Tepung', 'Bahan', 'kg', 15000, 50, 10),
+('Telur 1kg', 'Telur', 'Bahan', 'kg', 25000, 30, 5),
+('Gula Pasir 1kg', 'Gula', 'Bahan', 'kg', 12000, 40, 8),
+('Susu Bubuk', 'Susu', 'Bahan', 'kg', 20000, 20, 4),
+('Cokelat Bubuk 250gr', 'Cokelat', 'Bahan', 'kg', 18000, 15, 3),
+('Mentega 500gr', 'Mentega', 'Bahan', 'kg', 22000, 25, 5),
+('Keju Parut 250gr', 'Keju', 'Bahan', 'kg', 28000, 10, 2),
+('Baking Powder', 'Bahan Tambahan', 'Bahan', 'kg', 8000, 35, 2);
 
 -- Insert Default Login Account
 INSERT INTO login (name, email, username, password) VALUES
