@@ -26,3 +26,7 @@ Railway akan menjalankan aplikasi dengan command dari `railway.json` atau `Procf
 Model .pkl dibuat dengan 
 umpy 2.x dan scikit-learn 1.8.0, jadi Railway harus memakai Python 3.11+ dan dependency sesuai equirements.txt.
 
+## Inisialisasi Database Railway
+
+Buka service MySQL > Database > Data/Console, lalu jalankan isi ailway_init.sql.
+
