@@ -43,6 +43,14 @@ def load_env_file():
         print(f"Failed to load .env file: {e}")
 
 
+def env_first(*names):
+    """Return the first non-empty environment variable value."""
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return None
+
 load_env_file()
 
 # Configure logging
@@ -2262,6 +2270,7 @@ if __name__ == '__main__':
         port=int(os.getenv('PORT', '5000')),
         threaded=True
     )
+
 
 
 
