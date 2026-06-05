@@ -623,6 +623,16 @@ except Exception as e:
 # ROUTES
 # ============================================================================
 
+
+@app.route('/', methods=['GET'])
+def index():
+    """Root endpoint for Railway health/browser checks."""
+    return jsonify({
+        'status': 'success',
+        'message': 'BKprojectTA Flask API is running',
+        'available_endpoints': ['/health', '/test', '/metadata', '/info']
+    }), 200
+
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
@@ -2225,4 +2235,5 @@ if __name__ == '__main__':
         port=int(os.getenv('PORT', '5000')),
         threaded=True
     )
+
 
