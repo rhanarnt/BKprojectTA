@@ -16,6 +16,7 @@ import secrets
 import os
 import smtplib
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 import mysql.connector
 from mysql.connector import Error
 
@@ -55,10 +56,38 @@ CORS(app)
 # ============================================================================
 # DATABASE CONFIGURATION
 # ============================================================================
-DB_HOST = 'localhost'
-DB_USER = 'root'
-DB_PASSWORD = ''  # Ganti dengan password MySQL Anda jika ada
-DB_NAME = 'prediksi_stok_db'
+DATABASE_URL = os.getenv('MYSQL_URL') or os.getenv('DATABASE_URL', '')
+parsed_database_url = urlparse(DATABASE_URL) if DATABASE_URL else None
+
+DB_HOST = (
+    os.getenv('MYSQLHOST')
+    or os.getenv('DB_HOST')
+    or (parsed_database_url.hostname if parsed_database_url else None)
+    or 'localhost'
+)
+DB_PORT = int(
+    os.getenv('MYSQLPORT')
+    or os.getenv('DB_PORT')
+    or (parsed_database_url.port if parsed_database_url and parsed_database_url.port else 3306)
+)
+DB_USER = (
+    os.getenv('MYSQLUSER')
+    or os.getenv('DB_USER')
+    or (parsed_database_url.username if parsed_database_url else None)
+    or 'root'
+)
+DB_PASSWORD = (
+    os.getenv('MYSQLPASSWORD')
+    or os.getenv('DB_PASSWORD')
+    or (parsed_database_url.password if parsed_database_url else None)
+    or ''
+)
+DB_NAME = (
+    os.getenv('MYSQLDATABASE')
+    or os.getenv('DB_NAME')
+    or (parsed_database_url.path.lstrip('/') if parsed_database_url and parsed_database_url.path else None)
+    or 'prediksi_stok_db'
+)
 
 # Email/SMTP configuration for OTP delivery.
 # For Gmail, use an App Password, not the regular Gmail password.
@@ -76,6 +105,7 @@ def get_db_connection():
     try:
         connection = mysql.connector.connect(
             host=DB_HOST,
+            port=DB_PORT,
             user=DB_USER,
             password=DB_PASSWORD,
             database=DB_NAME
@@ -2236,6 +2266,7 @@ if __name__ == '__main__':
         port=int(os.getenv('PORT', '5000')),
         threaded=True
     )
+
 
 
 
