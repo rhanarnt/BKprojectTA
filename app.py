@@ -47,6 +47,7 @@ load_env_file()
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.info(f"Railway PORT env: {os.getenv('PORT', 'not-set')}")
 
 app = Flask(__name__)
 CORS(app)
@@ -2235,5 +2236,6 @@ if __name__ == '__main__':
         port=int(os.getenv('PORT', '5000')),
         threaded=True
     )
+
 
 
