@@ -20,3 +20,9 @@ Backend Flask untuk aplikasi prediksi stok bahan kue, siap deploy ke Railway.
 5. Import schema dari `setup_database.sql`, `database/recipes_schema.sql`, dan `database/report_schema.sql` ke database.
 
 Railway akan menjalankan aplikasi dengan command dari `railway.json` atau `Procfile`.
+
+## Catatan Dependency
+
+Model .pkl dibuat dengan 
+umpy 2.x dan scikit-learn 1.8.0, jadi Railway harus memakai Python 3.11+ dan dependency sesuai equirements.txt.
+
