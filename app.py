@@ -56,38 +56,34 @@ CORS(app)
 # ============================================================================
 # DATABASE CONFIGURATION
 # ============================================================================
-DATABASE_URL = os.getenv('MYSQL_URL') or os.getenv('DATABASE_URL', '')
+DATABASE_URL = env_first('MYSQL_URL', 'DATABASE_URL', 'MYSQL_PUBLIC_URL') or ''
 parsed_database_url = urlparse(DATABASE_URL) if DATABASE_URL else None
 
 DB_HOST = (
-    os.getenv('MYSQLHOST')
-    or os.getenv('DB_HOST')
+    env_first('MYSQLHOST', 'MYSQL_HOST', 'DB_HOST')
     or (parsed_database_url.hostname if parsed_database_url else None)
     or 'localhost'
 )
 DB_PORT = int(
-    os.getenv('MYSQLPORT')
-    or os.getenv('DB_PORT')
+    env_first('MYSQLPORT', 'MYSQL_PORT', 'DB_PORT')
     or (parsed_database_url.port if parsed_database_url and parsed_database_url.port else 3306)
 )
 DB_USER = (
-    os.getenv('MYSQLUSER')
-    or os.getenv('DB_USER')
+    env_first('MYSQLUSER', 'MYSQL_USER', 'DB_USER')
     or (parsed_database_url.username if parsed_database_url else None)
     or 'root'
 )
 DB_PASSWORD = (
-    os.getenv('MYSQLPASSWORD')
-    or os.getenv('DB_PASSWORD')
+    env_first('MYSQLPASSWORD', 'MYSQL_PASSWORD', 'MYSQL_ROOT_PASSWORD', 'DB_PASSWORD')
     or (parsed_database_url.password if parsed_database_url else None)
     or ''
 )
 DB_NAME = (
-    os.getenv('MYSQLDATABASE')
-    or os.getenv('DB_NAME')
+    env_first('MYSQLDATABASE', 'MYSQL_DATABASE', 'DB_NAME')
     or (parsed_database_url.path.lstrip('/') if parsed_database_url and parsed_database_url.path else None)
     or 'prediksi_stok_db'
 )
+logger.info(f"Database config host={DB_HOST} port={DB_PORT} user={DB_USER} database={DB_NAME}")
 
 # Email/SMTP configuration for OTP delivery.
 # For Gmail, use an App Password, not the regular Gmail password.
@@ -2266,6 +2262,7 @@ if __name__ == '__main__':
         port=int(os.getenv('PORT', '5000')),
         threaded=True
     )
+
 
 
 
