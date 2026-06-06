@@ -12,11 +12,13 @@ import numpy as np
 import logging
 import math
 import hashlib
+import json
 import secrets
 import os
 import smtplib
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 import mysql.connector
 from mysql.connector import Error
 
@@ -96,6 +98,8 @@ SMTP_USE_SSL = os.getenv('SMTP_USE_SSL', '').strip().lower() in ['1', 'true', 'y
 SMTP_EMAIL = os.getenv('SMTP_EMAIL', '')
 SMTP_PASSWORD = os.getenv('SMTP_APP_PASSWORD', '').replace(' ', '')
 SMTP_SENDER_NAME = os.getenv('SMTP_SENDER_NAME', 'Tobaku Sulastri')
+BREVO_API_KEY = os.getenv('BREVO_API_KEY', '').strip()
+BREVO_SENDER_EMAIL = os.getenv('BREVO_SENDER_EMAIL', SMTP_EMAIL).strip()
 
 # Transaction table names seen across local dumps and deployed databases.
 # The current Railway dump uses `stock in`.
@@ -264,6 +268,10 @@ def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
 
 def send_otp_email(recipient_email: str, otp_code: str) -> None:
+    if BREVO_API_KEY:
+        send_otp_email_brevo(recipient_email, otp_code)
+        return
+
     if not SMTP_EMAIL or not SMTP_PASSWORD:
         raise RuntimeError(
             'SMTP_EMAIL dan SMTP_APP_PASSWORD belum dikonfigurasi'
@@ -293,6 +301,42 @@ Tobaku Sulastri
             server.starttls()
         server.login(SMTP_EMAIL, SMTP_PASSWORD)
         server.send_message(message)
+
+def send_otp_email_brevo(recipient_email: str, otp_code: str) -> None:
+    if not BREVO_SENDER_EMAIL:
+        raise RuntimeError('BREVO_SENDER_EMAIL atau SMTP_EMAIL belum dikonfigurasi')
+
+    payload = {
+        'sender': {
+            'name': SMTP_SENDER_NAME,
+            'email': BREVO_SENDER_EMAIL,
+        },
+        'to': [{'email': recipient_email}],
+        'subject': 'Kode OTP Reset Password Tobaku Sulastri',
+        'textContent': (
+            'Halo,\n\n'
+            'Kode OTP untuk reset password aplikasi Tobaku Sulastri adalah:\n\n'
+            f'{otp_code}\n\n'
+            'Kode ini berlaku selama 10 menit. Abaikan email ini jika Anda tidak meminta reset password.\n\n'
+            'Terima kasih,\n'
+            'Tobaku Sulastri\n'
+        ),
+    }
+
+    request = Request(
+        'https://api.brevo.com/v3/smtp/email',
+        data=json.dumps(payload).encode('utf-8'),
+        headers={
+            'accept': 'application/json',
+            'api-key': BREVO_API_KEY,
+            'content-type': 'application/json',
+        },
+        method='POST',
+    )
+
+    with urlopen(request, timeout=20) as response:
+        if response.status >= 400:
+            raise RuntimeError(f'Brevo email error: HTTP {response.status}')
 
 def mask_email(email: str) -> str:
     if '@' not in email:
