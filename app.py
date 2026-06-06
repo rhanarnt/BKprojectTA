@@ -17,7 +17,8 @@ import secrets
 import os
 import smtplib
 from datetime import datetime, timedelta
-from urllib.parse import urlparse
+from base64 import urlsafe_b64encode
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 import mysql.connector
 from mysql.connector import Error
@@ -98,8 +99,10 @@ SMTP_USE_SSL = os.getenv('SMTP_USE_SSL', '').strip().lower() in ['1', 'true', 'y
 SMTP_EMAIL = os.getenv('SMTP_EMAIL', '')
 SMTP_PASSWORD = os.getenv('SMTP_APP_PASSWORD', '').replace(' ', '')
 SMTP_SENDER_NAME = os.getenv('SMTP_SENDER_NAME', 'Tobaku Sulastri')
-BREVO_API_KEY = os.getenv('BREVO_API_KEY', '').strip()
-BREVO_SENDER_EMAIL = os.getenv('BREVO_SENDER_EMAIL', SMTP_EMAIL).strip()
+GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID', '').strip()
+GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET', '').strip()
+GOOGLE_REFRESH_TOKEN = os.getenv('GOOGLE_REFRESH_TOKEN', '').strip()
+GMAIL_SENDER_EMAIL = os.getenv('GMAIL_SENDER_EMAIL', SMTP_EMAIL).strip()
 
 # Transaction table names seen across local dumps and deployed databases.
 # The current Railway dump uses `stock in`.
@@ -268,8 +271,8 @@ def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
 
 def send_otp_email(recipient_email: str, otp_code: str) -> None:
-    if BREVO_API_KEY:
-        send_otp_email_brevo(recipient_email, otp_code)
+    if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and GOOGLE_REFRESH_TOKEN:
+        send_otp_email_gmail_api(recipient_email, otp_code)
         return
 
     if not SMTP_EMAIL or not SMTP_PASSWORD:
@@ -302,41 +305,64 @@ Tobaku Sulastri
         server.login(SMTP_EMAIL, SMTP_PASSWORD)
         server.send_message(message)
 
-def send_otp_email_brevo(recipient_email: str, otp_code: str) -> None:
-    if not BREVO_SENDER_EMAIL:
-        raise RuntimeError('BREVO_SENDER_EMAIL atau SMTP_EMAIL belum dikonfigurasi')
-
+def get_google_access_token() -> str:
     payload = {
-        'sender': {
-            'name': SMTP_SENDER_NAME,
-            'email': BREVO_SENDER_EMAIL,
-        },
-        'to': [{'email': recipient_email}],
-        'subject': 'Kode OTP Reset Password Tobaku Sulastri',
-        'textContent': (
-            'Halo,\n\n'
-            'Kode OTP untuk reset password aplikasi Tobaku Sulastri adalah:\n\n'
-            f'{otp_code}\n\n'
-            'Kode ini berlaku selama 10 menit. Abaikan email ini jika Anda tidak meminta reset password.\n\n'
-            'Terima kasih,\n'
-            'Tobaku Sulastri\n'
-        ),
+        'client_id': GOOGLE_CLIENT_ID,
+        'client_secret': GOOGLE_CLIENT_SECRET,
+        'refresh_token': GOOGLE_REFRESH_TOKEN,
+        'grant_type': 'refresh_token',
     }
-
-    request = Request(
-        'https://api.brevo.com/v3/smtp/email',
-        data=json.dumps(payload).encode('utf-8'),
+    token_request = Request(
+        'https://oauth2.googleapis.com/token',
+        data=urlencode(payload).encode('utf-8'),
         headers={
-            'accept': 'application/json',
-            'api-key': BREVO_API_KEY,
-            'content-type': 'application/json',
+            'Content-Type': 'application/x-www-form-urlencoded',
         },
         method='POST',
     )
+    with urlopen(token_request, timeout=20) as response:
+        data = json.loads(response.read().decode('utf-8'))
 
-    with urlopen(request, timeout=20) as response:
+    access_token = data.get('access_token')
+    if not access_token:
+        raise RuntimeError('Gagal mengambil access token Gmail API')
+    return access_token
+
+def send_otp_email_gmail_api(recipient_email: str, otp_code: str) -> None:
+    if not GMAIL_SENDER_EMAIL:
+        raise RuntimeError('GMAIL_SENDER_EMAIL atau SMTP_EMAIL belum dikonfigurasi')
+
+    message = EmailMessage()
+    message['Subject'] = 'Kode OTP Reset Password Tobaku Sulastri'
+    message['From'] = f'{SMTP_SENDER_NAME} <{GMAIL_SENDER_EMAIL}>'
+    message['To'] = recipient_email
+    message.set_content(
+        f"""Halo,
+
+Kode OTP untuk reset password aplikasi Tobaku Sulastri adalah:
+
+{otp_code}
+
+Kode ini berlaku selama 10 menit. Abaikan email ini jika Anda tidak meminta reset password.
+
+Terima kasih,
+Tobaku Sulastri
+"""
+    )
+
+    raw_message = urlsafe_b64encode(message.as_bytes()).decode('utf-8').rstrip('=')
+    send_request = Request(
+        'https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
+        data=json.dumps({'raw': raw_message}).encode('utf-8'),
+        headers={
+            'Authorization': f'Bearer {get_google_access_token()}',
+            'Content-Type': 'application/json',
+        },
+        method='POST',
+    )
+    with urlopen(send_request, timeout=20) as response:
         if response.status >= 400:
-            raise RuntimeError(f'Brevo email error: HTTP {response.status}')
+            raise RuntimeError(f'Gmail API send error: HTTP {response.status}')
 
 def mask_email(email: str) -> str:
     if '@' not in email:
