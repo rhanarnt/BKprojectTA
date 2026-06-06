@@ -19,6 +19,7 @@ import smtplib
 from datetime import datetime, timedelta
 from base64 import urlsafe_b64encode
 from urllib.parse import urlencode, urlparse
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 import mysql.connector
 from mysql.connector import Error
@@ -320,8 +321,12 @@ def get_google_access_token() -> str:
         },
         method='POST',
     )
-    with urlopen(token_request, timeout=20) as response:
-        data = json.loads(response.read().decode('utf-8'))
+    try:
+        with urlopen(token_request, timeout=20) as response:
+            data = json.loads(response.read().decode('utf-8'))
+    except HTTPError as e:
+        detail = e.read().decode('utf-8', errors='replace')
+        raise RuntimeError(f'Google token error: HTTP {e.code} {detail}') from e
 
     access_token = data.get('access_token')
     if not access_token:
@@ -360,9 +365,13 @@ Tobaku Sulastri
         },
         method='POST',
     )
-    with urlopen(send_request, timeout=20) as response:
-        if response.status >= 400:
-            raise RuntimeError(f'Gmail API send error: HTTP {response.status}')
+    try:
+        with urlopen(send_request, timeout=20) as response:
+            if response.status >= 400:
+                raise RuntimeError(f'Gmail API send error: HTTP {response.status}')
+    except HTTPError as e:
+        detail = e.read().decode('utf-8', errors='replace')
+        raise RuntimeError(f'Gmail API send error: HTTP {e.code} {detail}') from e
 
 def mask_email(email: str) -> str:
     if '@' not in email:
