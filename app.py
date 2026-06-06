@@ -92,6 +92,7 @@ DB_NAME = (
 # For Gmail, use an App Password, not the regular Gmail password.
 SMTP_HOST = os.getenv('SMTP_HOST', 'smtp.gmail.com')
 SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
+SMTP_USE_SSL = os.getenv('SMTP_USE_SSL', '').strip().lower() in ['1', 'true', 'yes', 'on']
 SMTP_EMAIL = os.getenv('SMTP_EMAIL', '')
 SMTP_PASSWORD = os.getenv('SMTP_APP_PASSWORD', '').replace(' ', '')
 SMTP_SENDER_NAME = os.getenv('SMTP_SENDER_NAME', 'Tobaku Sulastri')
@@ -286,8 +287,10 @@ Tobaku Sulastri
 """
     )
 
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
-        server.starttls()
+    smtp_class = smtplib.SMTP_SSL if SMTP_USE_SSL or SMTP_PORT == 465 else smtplib.SMTP
+    with smtp_class(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+        if smtp_class is smtplib.SMTP:
+            server.starttls()
         server.login(SMTP_EMAIL, SMTP_PASSWORD)
         server.send_message(message)
 
