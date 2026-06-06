@@ -1,4 +1,4 @@
-﻿"""
+"""
 Flask API untuk Prediksi Permintaan Stok Bahan
 Menggunakan Random Forest Model
 """
@@ -43,20 +43,11 @@ def load_env_file():
         print(f"Failed to load .env file: {e}")
 
 
-def env_first(*names):
-    """Return the first non-empty environment variable value."""
-    for name in names:
-        value = os.getenv(name)
-        if value:
-            return value
-    return None
-
 load_env_file()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-logger.info(f"Railway PORT env: {os.getenv('PORT', 'not-set')}")
 
 app = Flask(__name__)
 CORS(app)
@@ -64,34 +55,38 @@ CORS(app)
 # ============================================================================
 # DATABASE CONFIGURATION
 # ============================================================================
-DATABASE_URL = env_first('MYSQL_URL', 'DATABASE_URL', 'MYSQL_PUBLIC_URL') or ''
+DATABASE_URL = os.getenv('MYSQL_URL') or os.getenv('DATABASE_URL', '')
 parsed_database_url = urlparse(DATABASE_URL) if DATABASE_URL else None
 
 DB_HOST = (
-    env_first('MYSQLHOST', 'MYSQL_HOST', 'DB_HOST')
+    os.getenv('MYSQLHOST')
+    or os.getenv('DB_HOST')
     or (parsed_database_url.hostname if parsed_database_url else None)
     or 'localhost'
 )
 DB_PORT = int(
-    env_first('MYSQLPORT', 'MYSQL_PORT', 'DB_PORT')
+    os.getenv('MYSQLPORT')
+    or os.getenv('DB_PORT')
     or (parsed_database_url.port if parsed_database_url and parsed_database_url.port else 3306)
 )
 DB_USER = (
-    env_first('MYSQLUSER', 'MYSQL_USER', 'DB_USER')
+    os.getenv('MYSQLUSER')
+    or os.getenv('DB_USER')
     or (parsed_database_url.username if parsed_database_url else None)
     or 'root'
 )
 DB_PASSWORD = (
-    env_first('MYSQLPASSWORD', 'MYSQL_PASSWORD', 'MYSQL_ROOT_PASSWORD', 'DB_PASSWORD')
+    os.getenv('MYSQLPASSWORD')
+    or os.getenv('DB_PASSWORD')
     or (parsed_database_url.password if parsed_database_url else None)
     or ''
 )
 DB_NAME = (
-    env_first('MYSQLDATABASE', 'MYSQL_DATABASE', 'DB_NAME')
+    os.getenv('MYSQLDATABASE')
+    or os.getenv('DB_NAME')
     or (parsed_database_url.path.lstrip('/') if parsed_database_url and parsed_database_url.path else None)
     or 'prediksi_stok_db'
 )
-logger.info(f"Database config host={DB_HOST} port={DB_PORT} user={DB_USER} database={DB_NAME}")
 
 # Email/SMTP configuration for OTP delivery.
 # For Gmail, use an App Password, not the regular Gmail password.
@@ -101,8 +96,9 @@ SMTP_EMAIL = os.getenv('SMTP_EMAIL', '')
 SMTP_PASSWORD = os.getenv('SMTP_APP_PASSWORD', '').replace(' ', '')
 SMTP_SENDER_NAME = os.getenv('SMTP_SENDER_NAME', 'Tobaku Sulastri')
 
-# Table names (use backticks for names with spaces)
-TRANSACTIONS_TABLE = "`Stock In`"
+# Transaction table names seen across local dumps and deployed databases.
+# The current Railway dump uses `stock in`.
+TRANSACTION_TABLE_CANDIDATES = ['stock in', 'Stock in', 'Stock In', 'transactions']
 
 def get_db_connection():
     """Get MySQL database connection"""
@@ -232,6 +228,10 @@ def get_existing_table(connection, candidates: list[str]) -> str | None:
         if table_exists(connection, table_name):
             return table_name
     return None
+
+def get_transactions_table_sql(connection) -> str | None:
+    table_name = get_existing_table(connection, TRANSACTION_TABLE_CANDIDATES)
+    return escape_table_name(table_name) if table_name else None
 
 def get_existing_column(connection, table_name: str, candidates: list[str]) -> str | None:
     cursor = connection.cursor()
@@ -649,7 +649,7 @@ try:
     metadata = joblib.load('model_metadata.pkl')
     logger.info("Models loaded successfully")
     logger.info(f"Model Type: {metadata['model_type']}")
-    logger.info(f"RÂ² Score: {metadata['r2_score']:.4f}")
+    logger.info(f"R² Score: {metadata['r2_score']:.4f}")
 except Exception as e:
     logger.error(f"Failed to load models: {e}")
     raise
@@ -657,16 +657,6 @@ except Exception as e:
 # ============================================================================
 # ROUTES
 # ============================================================================
-
-
-@app.route('/', methods=['GET'])
-def index():
-    """Root endpoint for Railway health/browser checks."""
-    return jsonify({
-        'status': 'success',
-        'message': 'BKprojectTA Flask API is running',
-        'available_endpoints': ['/health', '/test', '/metadata', '/info']
-    }), 200
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -1630,9 +1620,17 @@ def save_transaction():
         if not connection:
             return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
 
+        transactions_table_sql = get_transactions_table_sql(connection)
+        if not transactions_table_sql:
+            connection.close()
+            return jsonify({
+                'status': 'error',
+                'message': 'Transaction table not found'
+            }), 500
+
         cursor = connection.cursor()
         cursor.execute(f"""
-            INSERT INTO {TRANSACTIONS_TABLE}
+            INSERT INTO {transactions_table_sql}
             (product_name, category, quantity, unit_price, total_price, transaction_date)
             VALUES (%s, %s, %s, %s, %s, %s)
         """, (
@@ -1692,6 +1690,14 @@ def add_transaction_with_stock_update():
         if not connection:
             return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
 
+        transactions_table_sql = get_transactions_table_sql(connection)
+        if not transactions_table_sql:
+            connection.close()
+            return jsonify({
+                'status': 'error',
+                'message': 'Transaction table not found'
+            }), 500
+
         cursor = connection.cursor(dictionary=True)
 
         # 1. Get product info
@@ -1708,7 +1714,7 @@ def add_transaction_with_stock_update():
 
         # 2. Save transaction
         cursor.execute(f"""
-            INSERT INTO {TRANSACTIONS_TABLE}
+            INSERT INTO {transactions_table_sql}
             (product_name, category, quantity, unit_price, total_price, transaction_date)
             VALUES (%s, %s, %s, %s, %s, %s)
         """, (
@@ -1763,10 +1769,18 @@ def get_transactions():
         if not connection:
             return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
 
+        transactions_table_sql = get_transactions_table_sql(connection)
+        if not transactions_table_sql:
+            connection.close()
+            return jsonify({
+                'status': 'error',
+                'message': 'Transaction table not found'
+            }), 500
+
         cursor = connection.cursor(dictionary=True)
 
         # Build query
-        query = f"SELECT * FROM {TRANSACTIONS_TABLE} WHERE 1=1"
+        query = f"SELECT * FROM {transactions_table_sql} WHERE 1=1"
         params = []
 
         if product_name:
@@ -1780,7 +1794,7 @@ def get_transactions():
         transactions = cursor.fetchall()
 
         # Get total count
-        cursor.execute(f"SELECT COUNT(*) as total FROM {TRANSACTIONS_TABLE}" +
+        cursor.execute(f"SELECT COUNT(*) as total FROM {transactions_table_sql}" +
                       (" WHERE product_name LIKE %s" if product_name else ""),
                       ([f"%{product_name}%"] if product_name else []))
         total = cursor.fetchone()['total']
@@ -1940,13 +1954,13 @@ def laporan_bahan_kritis():
 
 @app.route('/laporan/stok-masuk', methods=['GET'])
 def laporan_stok_masuk():
-    """Laporan riwayat stok masuk dari tabel stok_masuk/Stock In/transactions."""
+    """Laporan riwayat stok masuk dari tabel stok_masuk/stock in/transactions."""
     try:
         connection = get_db_connection()
         if not connection:
             return build_report_response(False, 'Database connection failed', [], 500)
 
-        table_name = get_existing_table(connection, ['stok_masuk', 'Stock In', 'transactions'])
+        table_name = get_existing_table(connection, ['stok_masuk', 'stock in', 'Stock in', 'Stock In', 'transactions'])
         if not table_name:
             connection.close()
             return build_report_response(False, 'Tabel stok_masuk/transactions tidak ditemukan', [], 404)
@@ -2258,7 +2272,7 @@ if __name__ == '__main__':
     logger.info("Starting Prediksi Stok API")
     logger.info("=" * 80)
     logger.info(f"Model: {metadata['model_type']}")
-    logger.info(f"Accuracy (RÂ²): {metadata['r2_score']:.4f}")
+    logger.info(f"Accuracy (R²): {metadata['r2_score']:.4f}")
     logger.info(f"Features: {len(feature_columns)}")
     logger.info("Endpoints: /health, /metadata, /info, /prediksi, /batch-prediksi, /products, /transactions, /predictions, /recipes")
     logger.info("Access API at: http://localhost:5000")
@@ -2267,12 +2281,6 @@ if __name__ == '__main__':
     app.run(
         debug=False,
         host='0.0.0.0',
-        port=int(os.getenv('PORT', '5000')),
+        port=5000,
         threaded=True
     )
-
-
-
-
-
-
