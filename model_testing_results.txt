@@ -1,0 +1,24 @@
+================================================================================
+HASIL TESTING MODEL - PREDIKSI PERMINTAAN STOK BAHAN KUE
+================================================================================
+
+Total Data: 6742 baris
+Training Set: 5393 (80.0%)
+Testing Set: 1349 (20.0%)
+Features: 9
+Fitur yang dihapus karena data leakage: ['total_harga_update']
+Target: jumlah_permintaan_bahan
+Metode split: chronological split berdasarkan tanggal transaksi
+Periode Training: 2021-01-01 s/d 2024-12-28
+Periode Testing: 2024-12-28 s/d 2025-12-31
+
+LINEAR REGRESSION - Test Metrics:
+  R² Score: -0.0039
+  MAE: 2.49
+  RMSE: 2.86
+
+RANDOM FOREST - Test Metrics:
+  R² Score: -0.1217
+  MAE: 2.58
+  RMSE: 3.02
+
