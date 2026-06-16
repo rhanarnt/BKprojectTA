@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
@@ -86,7 +85,19 @@ for col in categorical_cols:
 
 # Select features
 numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-feature_cols = [col for col in numeric_cols if col != target_col]
+leakage_cols = [
+    target_col,
+    'total_harga_update',
+]
+feature_cols = [col for col in numeric_cols if col not in leakage_cols]
+
+removed_leakage_cols = [
+    col for col in leakage_cols
+    if col in numeric_cols and col != target_col
+]
+if removed_leakage_cols:
+    print(f"\n[OK] Fitur data leakage dihapus: {removed_leakage_cols}")
+    print("[INFO] total_harga_update tidak dipakai karena nilainya bergantung pada jumlah permintaan.")
 
 print(f"\nFeatures yang digunakan: {len(feature_cols)}")
 print(f"Features: {feature_cols}")
@@ -101,15 +112,31 @@ print(f"y shape: {y.shape}")
 mask = ~(X.isnull().any(axis=1) | y.isnull())
 X = X[mask]
 y = y[mask]
+if date_col:
+    date_series = df.loc[mask, date_col]
 
 print(f"After removing NaN: X={X.shape}, y={y.shape}")
 
-# Split data
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+# Split data by date order so testing represents future data.
+if date_col:
+    sorted_index = date_series.sort_values().index
+    X = X.loc[sorted_index]
+    y = y.loc[sorted_index]
+    date_series = date_series.loc[sorted_index]
+    print("[OK] Data diurutkan berdasarkan tanggal untuk testing prediksi masa depan")
+
+split_index = int(len(X) * 0.8)
+X_train = X.iloc[:split_index]
+X_test = X.iloc[split_index:]
+y_train = y.iloc[:split_index]
+y_test = y.iloc[split_index:]
 
 print(f"\nData dibagi:")
 print(f"  - Training: {len(X_train)} samples ({len(X_train)/len(X)*100:.1f}%)")
 print(f"  - Testing:  {len(X_test)} samples ({len(X_test)/len(X)*100:.1f}%)")
+if date_col:
+    print(f"  - Periode training: {date_series.iloc[:split_index].min().date()} s/d {date_series.iloc[:split_index].max().date()}")
+    print(f"  - Periode testing:  {date_series.iloc[split_index:].min().date()} s/d {date_series.iloc[split_index:].max().date()}")
 
 # ============================================================================
 # MODEL 1: LINEAR REGRESSION
@@ -155,6 +182,7 @@ print("MODEL 2: RANDOM FOREST REGRESSOR")
 print("=" * 80)
 
 rf_model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+
 rf_model.fit(X_train, y_train)
 
 # Predictions
@@ -213,6 +241,11 @@ else:
     best_r2 = test_r2_lr
     worst_r2 = test_r2_rf
 
+app_model = "Random Forest"
+app_r2 = test_r2_rf
+app_mae = test_mae_rf
+app_rmse = test_rmse_rf
+
 print(f"\n[BEST] MODEL TERBAIK: {best_model}")
 print(f"  - Akurasi {best_model} (R²) = {best_r2:.4f}")
 if test_r2_rf > test_r2_lr:
@@ -221,6 +254,9 @@ if test_r2_rf > test_r2_lr:
 else:
     print(f"  - Akurasi Random Forest (R²) = {test_r2_rf:.4f}")
     print(f"  - Perbedaan: {(test_r2_lr - test_r2_rf):.4f}")
+
+print("\n[INFO] Model yang disimpan untuk aplikasi: Random Forest")
+print("[INFO] Linear Regression hanya dipakai sebagai pembanding evaluasi.")
 
 # ============================================================================
 # SAVE RESULTS
@@ -234,7 +270,13 @@ results_file.write(f"Total Data: {df.shape[0]} baris\n")
 results_file.write(f"Training Set: {len(X_train)} ({len(X_train)/len(X)*100:.1f}%)\n")
 results_file.write(f"Testing Set: {len(X_test)} ({len(X_test)/len(X)*100:.1f}%)\n")
 results_file.write(f"Features: {len(feature_cols)}\n")
-results_file.write(f"Target: {target_col}\n\n")
+results_file.write(f"Fitur yang dihapus karena data leakage: {removed_leakage_cols}\n")
+results_file.write(f"Target: {target_col}\n")
+if date_col:
+    results_file.write("Metode split: chronological split berdasarkan tanggal transaksi\n")
+    results_file.write(f"Periode Training: {date_series.iloc[:split_index].min().date()} s/d {date_series.iloc[:split_index].max().date()}\n")
+    results_file.write(f"Periode Testing: {date_series.iloc[split_index:].min().date()} s/d {date_series.iloc[split_index:].max().date()}\n")
+results_file.write("\n")
 
 results_file.write("LINEAR REGRESSION - Test Metrics:\n")
 results_file.write(f"  R² Score: {test_r2_lr:.4f}\n")
@@ -246,7 +288,6 @@ results_file.write(f"  R² Score: {test_r2_rf:.4f}\n")
 results_file.write(f"  MAE: {test_mae_rf:.2f}\n")
 results_file.write(f"  RMSE: {test_rmse_rf:.2f}\n\n")
 
-results_file.write(f"REKOMENDASI: {best_model} (Lebih baik)\n")
 results_file.close()
 
 print("\n[OK] Hasil disimpan ke: model_testing_results.txt")
@@ -258,12 +299,8 @@ print("\n" + "=" * 80)
 print("MENYIMPAN MODEL TERBAIK")
 print("=" * 80)
 
-if best_model == "Linear Regression":
-    joblib.dump(lr_model, 'model_prediksi.pkl')
-    print("\n[OK] Model Linear Regression disimpan: model_prediksi.pkl")
-else:
-    joblib.dump(rf_model, 'model_prediksi.pkl')
-    print("\n[OK] Model Random Forest disimpan: model_prediksi.pkl")
+joblib.dump(rf_model, 'model_prediksi.pkl')
+print("\n[OK] Model Random Forest disimpan: model_prediksi.pkl")
 
 # Save encoders
 joblib.dump(encoders, 'encoders.pkl')
@@ -275,11 +312,14 @@ print("[OK] Feature columns disimpan: feature_columns.pkl")
 
 # Save metadata
 metadata = {
-    'model_type': best_model,
-    'r2_score': best_r2,
-    'mae': test_mae_lr if best_model == "Linear Regression" else test_mae_rf,
-    'rmse': test_rmse_lr if best_model == "Linear Regression" else test_rmse_rf,
+    'model_type': app_model,
+    'r2_score': app_r2,
+    'mae': app_mae,
+    'rmse': app_rmse,
     'feature_columns': feature_cols,
+    'removed_leakage_columns': removed_leakage_cols,
+    'split_method': 'chronological',
+    'comparison_best_model': best_model,
     'target_column': target_col,
     'total_samples': len(df)
 }
