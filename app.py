@@ -2412,6 +2412,233 @@ def laporan_prediksi():
     except Exception as e:
         logger.error(f"Laporan prediksi error: {str(e)}")
         return build_report_response(False, f'Gagal mengambil data: {str(e)}', [], 500)
+def normalize_prediction_date(value: str | None) -> datetime:
+    if not value:
+        return datetime.now()
+    try:
+        return datetime.fromisoformat(value.split('T')[0])
+    except Exception:
+        return datetime.now()
+
+
+def forecast_day_multiplier(target_date: datetime) -> float:
+    weekday = target_date.weekday()
+    if weekday == 4:  # Friday
+        return 1.1
+    if weekday == 5:  # Saturday
+        return 1.2
+    if weekday == 6:  # Sunday
+        return 1.15
+    return 1.0
+
+
+def load_recipe_production_averages(connection) -> dict[str, float]:
+    averages: dict[str, float] = {}
+    if not table_exists(connection, 'stock_usage_history'):
+        return averages
+    cursor = connection.cursor(dictionary=True)
+    try:
+        cursor.execute(
+            """
+            SELECT recipe_name, AVG(COALESCE(production_quantity, 0)) AS avg_production
+            FROM stock_usage_history
+            WHERE COALESCE(recipe_name, '') <> ''
+              AND COALESCE(production_quantity, 0) > 0
+            GROUP BY recipe_name
+            """
+        )
+        rows = cursor.fetchall()
+        for row in rows:
+            recipe_name = (row.get('recipe_name') or '').strip()
+            if not recipe_name:
+                continue
+            averages[recipe_name] = float(row.get('avg_production') or 1.0)
+    except Exception:
+        pass
+    finally:
+        cursor.close()
+    return averages
+
+
+def load_recipes_with_ingredients(connection, recipe_filter: str = '', limit: int | None = None) -> list[dict]:
+    if not table_exists(connection, 'recipes') or not table_exists(connection, 'recipe_ingredients'):
+        return []
+    cursor = connection.cursor(dictionary=True)
+    try:
+        query = """
+            SELECT r.id AS recipe_id,
+                   r.recipe_name,
+                   r.description,
+                   ri.product_name,
+                   ri.quantity_needed,
+                   ri.unit
+            FROM recipes r
+            LEFT JOIN recipe_ingredients ri ON ri.recipe_id = r.id
+        """
+        params = []
+        if recipe_filter:
+            query += " WHERE r.recipe_name LIKE %s"
+            params.append(f"%{recipe_filter}%")
+        query += " ORDER BY r.recipe_name, ri.product_name"
+        if limit:
+            query += " LIMIT %s"
+            params.append(limit)
+
+        cursor.execute(query, tuple(params))
+        return cursor.fetchall()
+    except Exception:
+        return []
+    finally:
+        cursor.close()
+
+
+def build_forecast_items(connection, start_date, days, recipe_filter='', limit=8):
+    """Predict ingredient needs for the next N days based on recipes and the ML model."""
+    averages = load_recipe_production_averages(connection)
+    recipes = load_recipes_with_ingredients(connection, recipe_filter=recipe_filter, limit=limit)
+    if not recipes:
+        return []
+
+    # Group ingredients by recipe
+    recipe_dict = {}
+    for r in recipes:
+        name = r['recipe_name']
+        if name not in recipe_dict:
+            recipe_dict[name] = {
+                'recipe_name': name,
+                'ingredients': []
+            }
+        if r['product_name']:
+            recipe_dict[name]['ingredients'].append({
+                'product_name': r['product_name'],
+                'quantity_needed': r['quantity_needed'],
+                'unit': r['unit']
+            })
+
+    report_items = []
+    for day_offset in range(days):
+        target_date = start_date + timedelta(days=day_offset)
+        multiplier = forecast_day_multiplier(target_date)
+
+        day_ingredients = {}
+        recipe_targets = []
+
+        for recipe_name, recipe_data in recipe_dict.items():
+            avg_production = averages.get(recipe_name, 1.0)
+            target_prod = max(1.0, avg_production * multiplier)
+            recipe_targets.append({
+                'recipe_name': recipe_name,
+                'target_produksi': round(target_prod, 2)
+            })
+
+            for ing in recipe_data['ingredients']:
+                ing_name = ing['product_name']
+                ing_unit = ing['unit'] or 'kg'
+
+                # Build model prediction features using standard normalization
+                features = normalize_prediction_payload({
+                    'prediction_date': target_date.date().isoformat(),
+                    'product_name': ing_name,
+                    'planned_quantity': int(target_prod)
+                })
+
+                # Predict using the loaded model directly
+                X_pred = pd.DataFrame([[features[f] for f in feature_columns]], columns=feature_columns)
+                pred_raw = float(model.predict(X_pred)[0])
+
+                # Determine model package size mapping (in grams/kg)
+                package_size = 1.0
+                pkg_unit = 'kg'
+                ing_lower = ing_name.lower()
+                if 'baking' in ing_lower:
+                    package_size = 45.0
+                    pkg_unit = 'gr'
+                elif 'cokelat' in ing_lower or 'coklat' in ing_lower:
+                    package_size = 250.0
+                    pkg_unit = 'gr'
+                elif 'keju' in ing_lower:
+                    package_size = 250.0
+                    pkg_unit = 'gr'
+                elif 'mentega' in ing_lower:
+                    package_size = 500.0
+                    pkg_unit = 'gr'
+                elif 'susu' in ing_lower:
+                    package_size = 27.0
+                    pkg_unit = 'gr'
+
+                # Convert predicted package float quantity into the ingredient's recipe unit
+                pred_qty = convert_stock_quantity(pred_raw * package_size, pkg_unit, ing_unit)
+
+                if ing_name not in day_ingredients:
+                    day_ingredients[ing_name] = {
+                        'nama_bahan': ing_name,
+                        'jumlah': 0.0,
+                        'unit': ing_unit
+                    }
+                day_ingredients[ing_name]['jumlah'] += pred_qty
+
+        ingredients_list = []
+        total_qty = 0.0
+        for ing_name, ing_info in day_ingredients.items():
+            ing_info['jumlah'] = round(ing_info['jumlah'], 2)
+            ingredients_list.append(ing_info)
+            total_qty += ing_info['jumlah']
+
+        report_items.append({
+            'tanggal_prediksi': target_date.date().isoformat(),
+            'multiplier': round(multiplier, 2),
+            'bahan': ingredients_list,
+            'target_produksi': recipe_targets,
+            'jumlah_bahan': float(len(ingredients_list)),
+            'total_bahan': round(total_qty, 2)
+        })
+
+    return report_items
+
+
+@app.route('/laporan/prediksi-forecast', methods=['GET'])
+def laporan_prediksi_forecast():
+    """Laporan prediksi kebutuhan bahan beberapa hari ke depan dalam format JSON."""
+    try:
+        days = max(1, min(request.args.get('days', default=7, type=int), 90))
+        limit = max(1, min(request.args.get('limit', default=8, type=int), 50))
+        recipe_filter = request.args.get('product_name', default='', type=str).strip()
+        start_date = normalize_prediction_date(request.args.get('start_date'))
+
+        connection = get_db_connection()
+        if not connection:
+            return build_report_response(False, 'Database connection failed', [], 500)
+
+        try:
+            report_items = build_forecast_items(
+                connection,
+                start_date,
+                days,
+                recipe_filter=recipe_filter,
+                limit=limit,
+            )
+        finally:
+            connection.close()
+
+        return jsonify({
+            'status': True,
+            'message': 'Data prediksi kebutuhan bahan berhasil diambil',
+            'parameter': {
+                'start_date': start_date.date().isoformat(),
+                'days': days,
+                'limit': limit,
+                'recipe_name': recipe_filter or None,
+            },
+            'model_accuracy': {
+                'r2_score': round(metadata['r2_score'], 4),
+                'mae': round(metadata['mae'], 4),
+                'rmse': round(metadata['rmse'], 4),
+            },
+            'data': report_items,
+        }), 200
+    except Exception as e:
+        logger.error(f"Laporan prediksi forecast error: {str(e)}")
+        return build_report_response(False, f'Gagal membuat forecast: {str(e)}', [], 500)
 
 
 # ============================================================================
