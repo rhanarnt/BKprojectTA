@@ -56,6 +56,13 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
+# Initialize global variables for ML model components to satisfy IDE static analysis
+model = None
+encoders = {}
+feature_columns = []
+metadata = {}
+
+
 # ============================================================================
 # DATABASE CONFIGURATION
 # ============================================================================
@@ -852,13 +859,14 @@ def normalize_prediction_payload(data: dict) -> dict:
 # LOAD MODELS AT STARTUP
 # ============================================================================
 try:
-    model = joblib.load('model_prediksi.pkl')
-    encoders = joblib.load('encoders.pkl')
-    feature_columns = joblib.load('feature_columns.pkl')
-    metadata = joblib.load('model_metadata.pkl')
+    _model_dir = os.path.dirname(__file__)
+    model = joblib.load(os.path.join(_model_dir, 'model_prediksi.pkl'))
+    encoders = joblib.load(os.path.join(_model_dir, 'encoders.pkl'))
+    feature_columns = joblib.load(os.path.join(_model_dir, 'feature_columns.pkl'))
+    metadata = joblib.load(os.path.join(_model_dir, 'model_metadata.pkl'))
     logger.info("Models loaded successfully")
     logger.info(f"Model Type: {metadata['model_type']}")
-    logger.info(f"R² Score: {metadata['r2_score']:.4f}")
+    logger.info(f"R2 Score: {metadata['r2_score']:.4f}")
 except Exception as e:
     logger.error(f"Failed to load models: {e}")
     raise
@@ -2786,6 +2794,209 @@ def get_recipe(recipe_id):
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/recipes', methods=['POST'])
+def create_recipe():
+    """
+    Create a new recipe with its ingredients
+    Body: {
+        "recipe_name": "Kue Baru",
+        "description": "Deskripsi kue baru",
+        "ingredients": [
+            {"product_name": "Tepung Terigu 1kg", "quantity_needed": 350.0, "unit": "gr"},
+            {"product_name": "Telur 1kg", "quantity_needed": 2.0, "unit": "butir"}
+        ]
+    }
+    """
+    try:
+        data = request.json
+        if not data or 'recipe_name' not in data:
+            return jsonify({'status': 'error', 'message': 'Missing recipe_name'}), 400
+
+        recipe_name = data['recipe_name'].strip()
+        description = data.get('description', '').strip()
+        ingredients = data.get('ingredients', [])
+
+        if not recipe_name:
+            return jsonify({'status': 'error', 'message': 'recipe_name cannot be empty'}), 400
+
+        connection = get_db_connection()
+        if not connection:
+            return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
+
+        cursor = connection.cursor()
+
+        # Check duplicate
+        cursor.execute("SELECT id FROM recipes WHERE recipe_name = %s", (recipe_name,))
+        if cursor.fetchone():
+            cursor.close()
+            connection.close()
+            return jsonify({'status': 'error', 'message': f'Recipe "{recipe_name}" already exists'}), 409
+
+        # Insert recipe
+        cursor.execute(
+            "INSERT INTO recipes (recipe_name, description) VALUES (%s, %s)",
+            (recipe_name, description)
+        )
+        recipe_id = cursor.lastrowid
+
+        # Insert ingredients
+        for ing in ingredients:
+            p_name = ing.get('product_name')
+            qty = ing.get('quantity_needed')
+            unit = ing.get('unit', '')
+
+            if not p_name or qty is None:
+                # Rollback and exit
+                connection.rollback()
+                cursor.close()
+                connection.close()
+                return jsonify({'status': 'error', 'message': 'Each ingredient must have product_name and quantity_needed'}), 400
+
+            cursor.execute(
+                "INSERT INTO recipe_ingredients (recipe_id, product_name, quantity_needed, unit) VALUES (%s, %s, %s, %s)",
+                (recipe_id, p_name, float(qty), unit)
+            )
+
+        connection.commit()
+        cursor.close()
+        connection.close()
+
+        return jsonify({
+            'status': 'success',
+            'recipe_id': recipe_id,
+            'message': 'Recipe created successfully'
+        }), 201
+
+    except Exception as e:
+        logger.error(f"Create recipe error: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/recipes/<int:recipe_id>', methods=['PUT'])
+def update_recipe(recipe_id):
+    """
+    Update an existing recipe and its ingredients
+    Body: {
+        "recipe_name": "Kue Brownies Edit",
+        "description": "Brownies updated description",
+        "ingredients": [
+            {"product_name": "Tepung Terigu 1kg", "quantity_needed": 300.0, "unit": "gr"},
+            {"product_name": "Cokelat Bubuk 250gr", "quantity_needed": 120.0, "unit": "gr"}
+        ]
+    }
+    """
+    try:
+        data = request.json
+        if not data:
+            return jsonify({'status': 'error', 'message': 'Missing request body'}), 400
+
+        connection = get_db_connection()
+        if not connection:
+            return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
+
+        cursor = connection.cursor(dictionary=True)
+
+        # Check if recipe exists
+        cursor.execute("SELECT id FROM recipes WHERE id = %s", (recipe_id,))
+        if not cursor.fetchone():
+            cursor.close()
+            connection.close()
+            return jsonify({'status': 'error', 'message': 'Recipe not found'}), 404
+
+        # Update recipe fields if provided
+        recipe_name = data.get('recipe_name', '').strip()
+        description = data.get('description', '').strip()
+
+        if recipe_name:
+            # Check for duplicate recipe name
+            cursor.execute("SELECT id FROM recipes WHERE recipe_name = %s AND id != %s", (recipe_name, recipe_id))
+            if cursor.fetchone():
+                cursor.close()
+                connection.close()
+                return jsonify({'status': 'error', 'message': f'Recipe name "{recipe_name}" is already used by another recipe'}), 409
+
+            cursor.execute(
+                "UPDATE recipes SET recipe_name = %s, description = %s WHERE id = %s",
+                (recipe_name, description, recipe_id)
+            )
+        else:
+            # Just update description if it's there
+            cursor.execute(
+                "UPDATE recipes SET description = %s WHERE id = %s",
+                (description, recipe_id)
+            )
+
+        # Update ingredients if provided
+        if 'ingredients' in data:
+            ingredients = data['ingredients']
+            # Delete old ones
+            cursor.execute("DELETE FROM recipe_ingredients WHERE recipe_id = %s", (recipe_id,))
+
+            # Insert new ones
+            for ing in ingredients:
+                p_name = ing.get('product_name')
+                qty = ing.get('quantity_needed')
+                unit = ing.get('unit', '')
+
+                if not p_name or qty is None:
+                    connection.rollback()
+                    cursor.close()
+                    connection.close()
+                    return jsonify({'status': 'error', 'message': 'Each ingredient must have product_name and quantity_needed'}), 400
+
+                cursor.execute(
+                    "INSERT INTO recipe_ingredients (recipe_id, product_name, quantity_needed, unit) VALUES (%s, %s, %s, %s)",
+                    (recipe_id, p_name, float(qty), unit)
+                )
+
+        connection.commit()
+        cursor.close()
+        connection.close()
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Recipe updated successfully'
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Update recipe error: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/recipes/<int:recipe_id>', methods=['DELETE'])
+def delete_recipe(recipe_id):
+    """Delete a recipe"""
+    try:
+        connection = get_db_connection()
+        if not connection:
+            return jsonify({'status': 'error', 'message': 'Database connection failed'}), 500
+
+        cursor = connection.cursor()
+
+        # Check if recipe exists
+        cursor.execute("SELECT id FROM recipes WHERE id = %s", (recipe_id,))
+        if not cursor.fetchone():
+            cursor.close()
+            connection.close()
+            return jsonify({'status': 'error', 'message': 'Recipe not found'}), 404
+
+        # Delete recipe
+        cursor.execute("DELETE FROM recipes WHERE id = %s", (recipe_id,))
+        connection.commit()
+
+        cursor.close()
+        connection.close()
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Recipe deleted successfully'
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Delete recipe error: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'status': 'error', 'message': 'Endpoint tidak ditemukan'}), 404
@@ -2809,7 +3020,7 @@ if __name__ == '__main__':
     logger.info("Starting Prediksi Stok API")
     logger.info("=" * 80)
     logger.info(f"Model: {metadata['model_type']}")
-    logger.info(f"Accuracy (R²): {metadata['r2_score']:.4f}")
+    logger.info(f"Accuracy (R2): {metadata['r2_score']:.4f}")
     logger.info(f"Features: {len(feature_columns)}")
     logger.info("Endpoints: /health, /metadata, /info, /prediksi, /batch-prediksi, /products, /transactions, /predictions, /recipes")
     logger.info("Access API at: http://localhost:5000")
