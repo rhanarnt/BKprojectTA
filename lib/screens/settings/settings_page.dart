@@ -156,6 +156,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       onTap: _showResetPasswordDialog,
                     ),
                     const SizedBox(height: 32),
+                    _buildSectionTitle('Manajemen Data'),
+                    const SizedBox(height: 16),
+                    _buildActionCard(
+                      icon: Icons.cookie_outlined,
+                      title: 'Kelola Resep Kue',
+                      subtitle: 'Tambah, edit, dan hapus resep serta takaran bahan',
+                      onTap: () {
+                        Navigator.of(context).pushNamed('/recipes-manage');
+                      },
+                    ),
+                    const SizedBox(height: 32),
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(

@@ -8,6 +8,8 @@ import 'package:finalproject/screens/transaction/transaction_page.dart';
 import 'package:finalproject/screens/products/product_list_page.dart';
 import 'package:finalproject/screens/reports/report_page.dart';
 import 'package:finalproject/screens/settings/settings_page.dart';
+import 'package:finalproject/screens/settings/recipe_list_page.dart';
+import 'package:finalproject/screens/settings/recipe_form_page.dart';
 import 'package:finalproject/utils/route_observer.dart';
 
 void main() {
@@ -34,6 +36,8 @@ class MyApp extends StatelessWidget {
         '/products': (context) => const ProductListScreen(),
         '/reports': (context) => const ReportScreen(),
         '/settings': (context) => const SettingsScreen(),
+        '/recipes-manage': (context) => const RecipeListPage(),
+        '/recipe-form': (context) => const RecipeFormPage(),
       },
     );
   }

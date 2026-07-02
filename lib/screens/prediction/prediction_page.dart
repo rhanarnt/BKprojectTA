@@ -12,6 +12,7 @@ class PredictionScreen extends StatefulWidget {
 class _PredictionScreenState extends State<PredictionScreen> {
   late final PredictionController _controller;
   final TextEditingController _productionController = TextEditingController();
+  bool _showAcademicDetails = false;
 
   @override
   void initState() {
@@ -748,49 +749,153 @@ class _PredictionScreenState extends State<PredictionScreen> {
                                           ],
                                         ),
                                         const SizedBox(height: 10),
-                                        Container(
-                                          width: double.infinity,
-                                          padding: const EdgeInsets.all(12),
-                                          decoration: BoxDecoration(
-                                            color: Colors.white.withOpacity(0.65),
-                                            borderRadius: BorderRadius.circular(10),
-                                            border: Border.all(
-                                              color: const Color(0xFFA89080).withOpacity(0.2),
-                                            ),
-                                          ),
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              Row(
-                                                children: [
-                                                  const Icon(
-                                                    Icons.info_outline_rounded,
-                                                    size: 14,
-                                                    color: Color(0xFFA89080),
-                                                  ),
-                                                  const SizedBox(width: 6),
-                                                  Text(
-                                                    'Rangkuman Prediksi & Acuan Dosen:',
-                                                    style: TextStyle(
-                                                      fontSize: 11,
-                                                      fontWeight: FontWeight.w700,
-                                                      color: const Color(0xFFA89080).withOpacity(0.9),
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                              const SizedBox(height: 6),
-                                              Text(
-                                                '• Akurasi Model (R²): ${_controller.predictionR2 == null ? '-' : _controller.predictionR2!.toStringAsFixed(4)} (${_controller.predictionR2 == null ? 'Belum dihitung' : _controller.predictionR2! >= 0.7 ? 'Sangat Baik, target ≥ 0.50' : _controller.predictionR2! >= 0.5 ? 'Cukup Baik, target ≥ 0.50' : 'Kurang Baik, target ≥ 0.50'})\n'
-                                                '• Potensi Meleset (MAE): ${_controller.predictionMae == null ? '-' : '±${_controller.predictionMae!.toStringAsFixed(1)} unit'} (${_controller.predictionMae == null ? 'Belum dihitung' : _controller.predictionMae! <= 2.0 ? 'Sangat Akurat, target ≤ 2.0' : 'Kurang Akurat, target ≤ 2.0'})',
-                                                style: const TextStyle(
-                                                  fontSize: 11,
-                                                  color: Color(0xFF4B5563),
-                                                  height: 1.4,
+                                        Builder(
+                                          builder: (context) {
+                                            final r2 = _controller.predictionR2;
+                                            final mae = _controller.predictionMae;
+
+                                            String statusTitle = 'Belum Dihitung';
+                                            String description = 'Silakan pilih resep dan lakukan perhitungan prediksi terlebih dahulu.';
+                                            Color badgeColor = Colors.grey;
+                                            IconData statusIcon = Icons.info_outline;
+
+                                            if (r2 != null && mae != null) {
+                                              if (r2 >= 0.70) {
+                                                statusTitle = 'Tinggi (Sangat Akurat) ✨';
+                                                description = 'Pola penjualan kue ini sangat stabil dan konsisten. Prediksi ini sangat aman untuk diikuti sepenuhnya dalam merencanakan stok produksi Anda.';
+                                                badgeColor = const Color(0xFF4CAF50); // statusSuccess / green
+                                                statusIcon = Icons.check_circle_outline;
+                                              } else if (r2 >= 0.50) {
+                                                statusTitle = 'Sedang (Cukup Akurat) 👍';
+                                                description = 'Pola penjualan cukup stabil. Prediksi ini cukup aman diikuti, dengan perkiraan tebakan bisa meleset sedikit sekitar ±${mae.toStringAsFixed(1)} unit.';
+                                                badgeColor = const Color(0xFF2196F3); // secondaryBlue / blue
+                                                statusIcon = Icons.info_outline_rounded;
+                                              } else {
+                                                statusTitle = 'Perlu Hati-Hati ⚠️';
+                                                description = 'Pola penjualan bahan ini naik-turun secara drastis (tidak menentu). Jadikan prediksi ini acuan kasar saja, dan sesuaikan produksi dengan rata-rata penjualan harian atau kondisi nyata toko.';
+                                                badgeColor = const Color(0xFFFF9800); // statusWarning / orange
+                                                statusIcon = Icons.warning_amber_rounded;
+                                              }
+                                            }
+
+                                            return Container(
+                                              width: double.infinity,
+                                              padding: const EdgeInsets.all(12),
+                                              decoration: BoxDecoration(
+                                                color: Colors.white.withValues(alpha: 0.65),
+                                                borderRadius: BorderRadius.circular(10),
+                                                border: Border.all(
+                                                  color: const Color(0xFFA89080).withValues(alpha: 0.2),
                                                 ),
                                               ),
-                                            ],
-                                          ),
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  // Title row
+                                                  Row(
+                                                    children: [
+                                                      Icon(
+                                                        statusIcon,
+                                                        size: 16,
+                                                        color: badgeColor,
+                                                      ),
+                                                      const SizedBox(width: 6),
+                                                      const Expanded(
+                                                        child: Text(
+                                                          'Tingkat Kepercayaan Prediksi:',
+                                                          style: TextStyle(
+                                                            fontSize: 12,
+                                                            fontWeight: FontWeight.w700,
+                                                            color: Color(0xFF2C1810), // textPrimary
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                  const SizedBox(height: 6),
+                                                  // Status Badge
+                                                  Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                    decoration: BoxDecoration(
+                                                      color: badgeColor.withValues(alpha: 0.15),
+                                                      borderRadius: BorderRadius.circular(6),
+                                                    ),
+                                                    child: Text(
+                                                      statusTitle,
+                                                      style: TextStyle(
+                                                        fontSize: 11,
+                                                        fontWeight: FontWeight.bold,
+                                                        color: badgeColor,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  const SizedBox(height: 8),
+                                                  // Description
+                                                  Text(
+                                                    description,
+                                                    style: const TextStyle(
+                                                      fontSize: 11,
+                                                      color: Color(0xFF4B5563),
+                                                      height: 1.4,
+                                                    ),
+                                                  ),
+                                                  const SizedBox(height: 10),
+                                                  const Divider(height: 1, color: Color(0xFFE8DDD5)), // grey200
+                                                  const SizedBox(height: 8),
+                                                  // Accordion toggle button
+                                                  GestureDetector(
+                                                    onTap: () {
+                                                      setState(() {
+                                                        _showAcademicDetails = !_showAcademicDetails;
+                                                      });
+                                                    },
+                                                    child: Row(
+                                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                                      children: [
+                                                        const Text(
+                                                          'Lihat Detail Parameter Akademis (Dosen)',
+                                                          style: TextStyle(
+                                                            fontSize: 10,
+                                                            fontWeight: FontWeight.w600,
+                                                            color: Color(0xFF8B6E58), // primaryBrown
+                                                            decoration: TextDecoration.underline,
+                                                          ),
+                                                        ),
+                                                        Icon(
+                                                          _showAcademicDetails
+                                                              ? Icons.keyboard_arrow_up
+                                                              : Icons.keyboard_arrow_down,
+                                                          size: 14,
+                                                          color: const Color(0xFF8B6E58), // primaryBrown
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                  if (_showAcademicDetails) ...[
+                                                    const SizedBox(height: 8),
+                                                    Container(
+                                                      width: double.infinity,
+                                                      padding: const EdgeInsets.all(8),
+                                                      decoration: BoxDecoration(
+                                                        color: const Color(0xFFF5EFE8).withValues(alpha: 0.5), // grey100
+                                                        borderRadius: BorderRadius.circular(6),
+                                                      ),
+                                                      child: Text(
+                                                        '• Akurasi Model (R²): ${r2 == null ? '-' : r2.toStringAsFixed(4)} (${r2 == null ? 'Belum dihitung' : r2 >= 0.7 ? 'Sangat Baik, target ≥ 0.50' : r2 >= 0.5 ? 'Cukup Baik, target ≥ 0.50' : 'Kurang Baik, target ≥ 0.50'})\n'
+                                                        '• Potensi Meleset (MAE): ${mae == null ? '-' : '±${mae.toStringAsFixed(1)} unit'} (${mae == null ? 'Belum dihitung' : mae <= 2.0 ? 'Sangat Akurat, target ≤ 2.0' : 'Kurang Akurat, target ≤ 2.0'})',
+                                                        style: const TextStyle(
+                                                          fontSize: 10,
+                                                          color: Color(0xFF6B5040), // textSecondary
+                                                          height: 1.4,
+                                                          fontFamily: 'monospace',
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ],
+                                              ),
+                                            );
+                                          },
                                         ),
                                       ],
                                     ),

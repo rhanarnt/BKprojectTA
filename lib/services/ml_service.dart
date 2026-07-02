@@ -4,8 +4,9 @@ import 'dart:convert';
 
 class MLService {
   // API URL Railway Flask backend.
-  static const String baseUrl = 'https://web-production-c3c06.up.railway.app';
+  static const String baseUrl = 'http://127.0.0.1:5000';
   //http://127.0.0.1:5000
+  //https://web-production-c3c06.up.railway.app
   static const int timeoutSeconds = 30;
 
   static dynamic _tryDecodeJsonBody(String body) {
@@ -892,6 +893,122 @@ class MLService {
     } catch (e) {
       print('Get recipe error: $e');
       return null;
+    }
+  }
+
+  /// Create new recipe with ingredients
+  static Future<Map<String, dynamic>> createRecipe({
+    required String recipeName,
+    required String description,
+    required List<Map<String, dynamic>> ingredients,
+  }) async {
+    try {
+      final data = {
+        'recipe_name': recipeName,
+        'description': description,
+        'ingredients': ingredients,
+      };
+
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/recipes'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(data),
+          )
+          .timeout(Duration(seconds: timeoutSeconds));
+
+      final body = _decodeJsonMap(response.body);
+      if (body == null) {
+        return {
+          'status': 'error',
+          'message': 'Server mengembalikan respons bukan JSON.',
+        };
+      }
+
+      if (response.statusCode == 201) {
+        return body;
+      }
+      return {
+        'status': 'error',
+        'message': body['message'] ?? 'Gagal membuat resep',
+      };
+    } catch (e) {
+      print('Create resep error: $e');
+      return {'status': 'error', 'message': 'Connection error: $e'};
+    }
+  }
+
+  /// Update existing recipe with ingredients
+  static Future<Map<String, dynamic>> updateRecipe({
+    required int recipeId,
+    required String recipeName,
+    required String description,
+    required List<Map<String, dynamic>> ingredients,
+  }) async {
+    try {
+      final data = {
+        'recipe_name': recipeName,
+        'description': description,
+        'ingredients': ingredients,
+      };
+
+      final response = await http
+          .put(
+            Uri.parse('$baseUrl/recipes/$recipeId'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(data),
+          )
+          .timeout(Duration(seconds: timeoutSeconds));
+
+      final body = _decodeJsonMap(response.body);
+      if (body == null) {
+        return {
+          'status': 'error',
+          'message': 'Server mengembalikan respons bukan JSON.',
+        };
+      }
+
+      if (response.statusCode == 200) {
+        return body;
+      }
+      return {
+        'status': 'error',
+        'message': body['message'] ?? 'Gagal memperbarui resep',
+      };
+    } catch (e) {
+      print('Update resep error: $e');
+      return {'status': 'error', 'message': 'Connection error: $e'};
+    }
+  }
+
+  /// Delete recipe
+  static Future<Map<String, dynamic>> deleteRecipe(int recipeId) async {
+    try {
+      final response = await http
+          .delete(
+            Uri.parse('$baseUrl/recipes/$recipeId'),
+            headers: {'Content-Type': 'application/json'},
+          )
+          .timeout(Duration(seconds: timeoutSeconds));
+
+      final body = _decodeJsonMap(response.body);
+      if (body == null) {
+        return {
+          'status': 'error',
+          'message': 'Server mengembalikan respons bukan JSON.',
+        };
+      }
+
+      if (response.statusCode == 200) {
+        return body;
+      }
+      return {
+        'status': 'error',
+        'message': body['message'] ?? 'Gagal menghapus resep',
+      };
+    } catch (e) {
+      print('Delete resep error: $e');
+      return {'status': 'error', 'message': 'Connection error: $e'};
     }
   }
 }
